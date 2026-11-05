@@ -190,12 +190,18 @@ ICON_DOC_NEXT = catalog['next_24']
 ICON_DOC_UP = catalog['up_24']
 
 # Audio drivers
-# pyo's name for the CoreAudio backend is 'coreaudio' (an unknown name silently
-# falls back to portaudio).
+# pyo's native 'coreaudio' backend is not offered on macOS: in pyo 1.1.0,
+# Server_coreaudio_init overflows a heap buffer on every boot (it fills
+# AudioHardwareIOProcStreamUsage.mStreamIsOn per *channel* instead of per
+# stream, into a buffer sized by a misused GetPropertyData call), which crashes
+# the app shortly after pressing play. It also numbers devices differently from
+# portaudio, while Cecilia's device preferences are portaudio indexes. Portaudio
+# already drives CoreAudio on macOS. A saved 'coreaudio' preference is reset to
+# 'portaudio' when the preferences are loaded (see Variables.py).
 if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
-    AUDIO_DRIVERS = ['portaudio', 'coreaudio']
+    AUDIO_DRIVERS = ['portaudio']
 elif sys.platform == 'darwin':
-    AUDIO_DRIVERS = ['portaudio', 'coreaudio', 'jack']
+    AUDIO_DRIVERS = ['portaudio', 'jack']
 elif sys.platform == 'win32':
     AUDIO_DRIVERS = ['portaudio']
 else:
