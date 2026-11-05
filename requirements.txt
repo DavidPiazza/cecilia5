@@ -1,2 +1,3 @@
 wxPython>=4.2.1
-pyo>=1.0.5 
+pyo>=1.0.5
+numpy

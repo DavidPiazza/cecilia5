@@ -190,10 +190,12 @@ ICON_DOC_NEXT = catalog['next_24']
 ICON_DOC_UP = catalog['up_24']
 
 # Audio drivers
-if sys.platform == 'darwin' and '/%s.app' % APP_NAME in os.getcwd():
-    AUDIO_DRIVERS = ['core', 'portaudio']
+# pyo's name for the CoreAudio backend is 'coreaudio' (an unknown name silently
+# falls back to portaudio).
+if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+    AUDIO_DRIVERS = ['portaudio', 'coreaudio']
 elif sys.platform == 'darwin':
-    AUDIO_DRIVERS = ['core', 'portaudio', 'jack']
+    AUDIO_DRIVERS = ['portaudio', 'coreaudio', 'jack']
 elif sys.platform == 'win32':
     AUDIO_DRIVERS = ['portaudio']
 else:
@@ -212,6 +214,16 @@ SAMPLE_RATES = ['22050', '44100', '48000', '88200', '96000']
 BIT_DEPTHS = {'16 bits int': 0, '24 bits int': 1, '32 bits int': 2, '32 bits float': 3}
 BUFFER_SIZES = ['8', '16', '32', '64', '128', '256', '512', '1024', '2048']
 AUDIO_FILE_FORMATS = {'wav': 0, 'aif': 1, 'au': 2, 'sd2': 4, 'flac': 5, 'caf': 6, 'ogg': 7}
+# Canonical file extension for each export file type.
+AUDIO_FILE_EXTENSIONS = {'wav': '.wav', 'aif': '.aif', 'au': '.au', 'sd2': '.sd2', 'flac': '.flac', 'caf': '.caf', 'ogg': '.ogg'}
+# Input file extension (lowercase) -> export file type, used by batch processing.
+EXTENSION_TO_FILE_TYPE = {'.wav': 'wav', '.wave': 'wav', '.aif': 'aif', '.aiff': 'aif', '.aifc': 'aif',
+                          '.au': 'au', '.sd2': 'sd2', '.flac': 'flac', '.caf': 'caf', '.ogg': 'ogg'}
+# Sample types (BIT_DEPTHS values) that libsndfile refuses for a given file type.
+# Asking for one of these makes sf_open() fail and leaves a 0 byte file behind.
+UNSUPPORTED_SAMPLE_TYPES = {'flac': (2, 3), 'sd2': (3,)}
+# Fallback sample type (24 bits int) when the preferred one is not supported.
+FALLBACK_SAMPLE_TYPE = 1
 AUDIO_FILE_WILDCARD = "All files|*.*|" \
             "Wave file|*.wave;*.WAV;*.WAVE;*.Wav;*.Wave;*.wav|" \
             "AIFF file|*.aif;*.aiff;*.aifc;*.AIF;*.AIFF;*.Aif;*.Aiff|" \

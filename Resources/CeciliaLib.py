@@ -189,6 +189,22 @@ def updateTooltips():
         tooltip.update()
 
 ###### Start / Stop / Drivers ######
+def getExportSampleType(fileType=None):
+    """Return the sample type to use when writing a file of type `fileType`.
+
+    libsndfile can't encode some format/bit depth combinations (e.g. FLAC
+    with 32 bits int or float). Asking for one makes pyo fail to open the
+    output file, leaving a 0 byte file on disk without any error in the
+    interface. In that case, fall back to 24 bits int.
+    """
+    if fileType is None:
+        fileType = getVar("audioFileType")
+    sampletype = getVar("sampSize")
+    if sampletype in UNSUPPORTED_SAMPLE_TYPES.get(fileType, ()):
+        print("Cecilia: '%s' files don't support the selected bit depth, writing 24 bits int instead." % fileType)
+        sampletype = FALLBACK_SAMPLE_TYPE
+    return sampletype
+
 def startCeciliaSound(timer=True, rec=False):
     # Check if soundfile is loaded
     for key in getVar("userInputs").keys():

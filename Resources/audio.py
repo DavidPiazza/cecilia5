@@ -1517,23 +1517,8 @@ class AudioServer():
             template = "sr: %s, buffer size: %s, num of channels: %s, duplex: %s, host: %s, output device: %s, input device: %s"
             print(template % (sr, bufsize, nchnls, duplex, host, outdev, indev))
             print("first physical input: %s, first physical output: %s\n" % (firstin, firstout))
-        # Attempt to boot the pyo Server. On modern macOS, the PortAudio driver can
-        # fail because of missing permissions or deprecated back-end. If this
-        # happens we transparently fall back to the CoreAudio back-end and store
-        # the new preference so subsequent launches use the working driver.
-        try:
-            self.server = Server(sr=sr, buffersize=bufsize, nchnls=nchnls, duplex=duplex,
-                                 audio=host, jackname=jackname)
-        except Exception as e:
-            # Only attempt a fallback on macOS – re-raise on other platforms.
-            if sys.platform.startswith('darwin') and host != 'core':
-                print("[Cecilia] Primary audio driver '%s' failed (%s). Falling back to 'core'." % (host, e))
-                CeciliaLib.setVar('audioHostAPI', 'core')
-                host = 'core'
-                self.server = Server(sr=sr, buffersize=bufsize, nchnls=nchnls, duplex=duplex,
-                                     audio=host, jackname=jackname)
-            else:
-                raise
+        self.server = Server(sr=sr, buffersize=bufsize, nchnls=nchnls, duplex=duplex,
+                             audio=host, jackname=jackname)
         if CeciliaLib.getVar("DEBUG"):
             self.server.verbosity = 15
         if host == 'jack':
@@ -1589,7 +1574,7 @@ class AudioServer():
         if rec:
             self.recording = True
             fileformat = AUDIO_FILE_FORMATS[CeciliaLib.getVar("audioFileType")]
-            sampletype = CeciliaLib.getVar("sampSize")
+            sampletype = CeciliaLib.getExportSampleType()
             self.recamp = SigTo(self.amp, time=0.05, init=self.amp)
             self.recorder = Record(self.pluginObjs[-1].out * self.recamp,
                                    CeciliaLib.getVar("outputFile"), CeciliaLib.getVar("nchnls"),
@@ -1665,7 +1650,7 @@ class AudioServer():
             dur = CeciliaLib.getVar("totalTime")
             filename = CeciliaLib.getVar("outputFile")
             fileformat = AUDIO_FILE_FORMATS[CeciliaLib.getVar("audioFileType")]
-            sampletype = CeciliaLib.getVar("sampSize")
+            sampletype = CeciliaLib.getExportSampleType()
             self.server.recordOptions(dur=dur, filename=filename, fileformat=fileformat, sampletype=sampletype)
 
     def setAmpCallable(self, callable):

@@ -76,6 +76,7 @@ class CeciliaMainFrame(wx.Frame):
         dlg.SetMinSize((600, -1))
         dlg.SetClientSize((600, 100))
         count = 0
+        failed = []
         totaltime = CeciliaLib.getVar("totalTime")
         for snd in cfileins[0].fileMenu.choice:
             cfileins[0].onSelectSound(-1, snd)
@@ -83,21 +84,15 @@ class CeciliaMainFrame(wx.Frame):
                 cfileins[0].setTotalTime()
             path = os.path.split(cfileins[0].filePath)[0]
             name, ext = os.path.splitext(snd)
-            lext = ext.lower()
-            if lext in [".wav", ".wave"]:
-                CeciliaLib.setVar('audioFileType', "wav")
-            elif lext in [".aif", ".aiff", ".aifc"]:
-                CeciliaLib.setVar('audioFileType', "aif")
-            elif lext in [".ogg"]:
-                CeciliaLib.setVar('audioFileType', "ogg")
-            elif lext in [".flac"]:
-                CeciliaLib.setVar('audioFileType', "flac")
-            elif lext in [".au"]:
-                CeciliaLib.setVar('audioFileType', "au")
-            elif lext in [".sd2"]:
-                CeciliaLib.setVar('audioFileType', "sd2")
-            elif lext in [".caf"]:
-                CeciliaLib.setVar('audioFileType', "caf")
+            # Write the same file type as the input when we know how to. For
+            # other inputs (mp3, ...), use the preferred export file type and
+            # its matching extension. The file type must be reset on every
+            # iteration, otherwise it leaks from the previous sound.
+            filetype = EXTENSION_TO_FILE_TYPE.get(ext.lower())
+            if filetype is None:
+                filetype = old_file_type
+                ext = AUDIO_FILE_EXTENSIONS[filetype]
+            CeciliaLib.setVar('audioFileType', filetype)
             if not os.path.isdir(os.path.join(path, folderName)):
                 os.mkdir(os.path.join(path, folderName))
             filename = os.path.join(path, folderName, "%s-%s%s" % (name, folderName, ext))
@@ -106,12 +101,23 @@ class CeciliaMainFrame(wx.Frame):
             CeciliaLib.getControlPanel().onBatchProcessing(filename)
             while (CeciliaLib.getVar("audioServer").isAudioServerRunning()):
                 time.sleep(.1)
+            if not self._isValidOutputFile(filename):
+                failed.append(filename)
         if CeciliaLib.getVar("useSoundDur"):
             CeciliaLib.getControlPanel().setTotalTime(totaltime)
             CeciliaLib.getControlPanel().updateDurationSlider()
 
         dlg.Destroy()
         CeciliaLib.setVar('audioFileType', old_file_type)
+        self._reportBatchFailures(failed)
+
+    def _isValidOutputFile(self, filename):
+        return os.path.isfile(filename) and os.path.getsize(filename) > 0
+
+    def _reportBatchFailures(self, failed):
+        if failed:
+            CeciliaLib.showErrorDialog("Batch processing error",
+                                       "%d file(s) could not be written:\n\n%s" % (len(failed), "\n".join(failed)))
 
     def applyBatchProcessingPreset(self, value):
         folderName = value
@@ -132,16 +138,19 @@ class CeciliaMainFrame(wx.Frame):
         if len(cfileins) > 0:
             filepath = cfileins[0].filePath
         count = 0
+        failed = []
         for preset in presets:
             CeciliaLib.loadPresetFromFile(preset)
+            # Files are written with the preferred export file type, so the
+            # extension must match it (not the input sound's extension).
+            ext = AUDIO_FILE_EXTENSIONS[CeciliaLib.getVar("audioFileType")]
             if len(cfileins) == 0:
                 path = os.path.join(os.path.expanduser("~"), "Desktop")
                 name = "batch"
-                ext = "." + CeciliaLib.getVar("audioFileType")
             else:
                 cfileins[0].onLoadFile(filepath)
                 path, fname = os.path.split(cfileins[0].filePath)
-                name, ext = os.path.splitext(fname)
+                name = os.path.splitext(fname)[0]
             if not os.path.isdir(os.path.join(path, folderName)):
                 os.mkdir(os.path.join(path, folderName))
             filename = os.path.join(path, folderName, "%s-%s%s" % (name, preset, ext))
@@ -150,7 +159,10 @@ class CeciliaMainFrame(wx.Frame):
             CeciliaLib.getControlPanel().onBatchProcessing(filename)
             while (CeciliaLib.getVar("audioServer").isAudioServerRunning()):
                 time.sleep(.1)
+            if not self._isValidOutputFile(filename):
+                failed.append(filename)
         dlg.Destroy()
+        self._reportBatchFailures(failed)
 
     def onBatchProcessing(self, event):
         if event.GetId() == ID_BATCH_FOLDER:

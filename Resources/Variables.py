@@ -164,11 +164,7 @@ CeciliaVar['sampSize'] = 0
 CeciliaVar['audioFileType'] = 'aif' # aif, wav, flac, ogg, sd2, au, caf
 CeciliaVar['samplePrecision'] = '32 bit' # '32 bit', '64 bit'
 CeciliaVar['bufferSize'] = '512'
-# Use CoreAudio by default on modern macOS, otherwise keep using PortAudio.
-if sys.platform.startswith('darwin'):
-    CeciliaVar['audioHostAPI'] = 'core'
-else:
-    CeciliaVar['audioHostAPI'] = 'portaudio'
+CeciliaVar['audioHostAPI'] = 'portaudio'
 CeciliaVar['audioOutput'] = def_out
 CeciliaVar['audioInput'] = def_in
 CeciliaVar['enableAudioInput'] = 0

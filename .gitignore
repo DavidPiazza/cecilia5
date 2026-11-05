@@ -60,3 +60,6 @@ target/
 # OSX Desktop
 .DS_Store
 
+
+# Local virtual environment
+.venv/
