@@ -181,9 +181,13 @@ def run():
             t = {}
 
             def start():
-                # the batch loop blocks until done; measure() polls afterwards
-                wx.CallAfter(lambda: (mf.applyBatchProcessingFolder("batch"), t.setdefault("done", True)))
-            measure("batch", start, lambda: t.get("done", False))
+                mf.applyBatchProcessingFolder("batch")
+                t["started"] = True
+
+            def is_done():
+                # older code blocks inside applyBatchProcessingFolder and has no batchRunner
+                return t.get("started") and getattr(mf, "batchRunner", None) is None
+            measure("batch", start, is_done)
         open_module("Spectral/Vectral.c5", go)
 
     order = [("idle", sc_idle), ("play", sc_play), ("bounce", sc_bounce), ("batch", sc_batch)]

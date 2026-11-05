@@ -39,6 +39,7 @@ class CeciliaMainFrame(wx.Frame):
         self.time = 0
         self.api_doc_frame = ManualFrame(kind="api")
         self.mod_doc_frame = ManualFrame(kind="modules")
+        self.batchRunner = None  # state of a running batch (see _runBatch)
         uibridge.install(self)
         profiling.install(self)
 
@@ -74,15 +75,9 @@ class CeciliaMainFrame(wx.Frame):
             return
         old_file_type = CeciliaLib.getVar("audioFileType")
         cfileins = CeciliaLib.getControlPanel().getCfileinList()
-        num_snds = len(cfileins[0].fileMenu.choice)
-        dlg = wx.ProgressDialog("Batch processing on sound folder", "", maximum=num_snds, parent=self,
-                               style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_SMOOTH)
-        dlg.SetMinSize((600, -1))
-        dlg.SetClientSize((600, 100))
-        count = 0
-        failed = []
         totaltime = CeciliaLib.getVar("totalTime")
-        for snd in cfileins[0].fileMenu.choice:
+
+        def prepare(snd):
             cfileins[0].onSelectSound(-1, snd)
             if CeciliaLib.getVar("useSoundDur"):
                 cfileins[0].setTotalTime()
@@ -99,29 +94,15 @@ class CeciliaMainFrame(wx.Frame):
             CeciliaLib.setVar('audioFileType', filetype)
             if not os.path.isdir(os.path.join(path, folderName)):
                 os.mkdir(os.path.join(path, folderName))
-            filename = os.path.join(path, folderName, "%s-%s%s" % (name, folderName, ext))
-            count += 1
-            (keepGoing, skip) = dlg.Update(count, "Exporting %s" % filename)
-            CeciliaLib.getControlPanel().onBatchProcessing(filename)
-            while (CeciliaLib.getVar("audioServer").isAudioServerRunning()):
-                time.sleep(.1)
-            if not self._isValidOutputFile(filename):
-                failed.append(filename)
-        if CeciliaLib.getVar("useSoundDur"):
-            CeciliaLib.getControlPanel().setTotalTime(totaltime)
-            CeciliaLib.getControlPanel().updateDurationSlider()
+            return os.path.join(path, folderName, "%s-%s%s" % (name, folderName, ext))
 
-        dlg.Destroy()
-        CeciliaLib.setVar('audioFileType', old_file_type)
-        self._reportBatchFailures(failed)
+        def finish():
+            if CeciliaLib.getVar("useSoundDur"):
+                CeciliaLib.getControlPanel().setTotalTime(totaltime)
+                CeciliaLib.getControlPanel().updateDurationSlider()
+            CeciliaLib.setVar('audioFileType', old_file_type)
 
-    def _isValidOutputFile(self, filename):
-        return os.path.isfile(filename) and os.path.getsize(filename) > 0
-
-    def _reportBatchFailures(self, failed):
-        if failed:
-            CeciliaLib.showErrorDialog("Batch processing error",
-                                       "%d file(s) could not be written:\n\n%s" % (len(failed), "\n".join(failed)))
+        self._runBatch("Batch processing on sound folder", list(cfileins[0].fileMenu.choice), prepare, finish)
 
     def applyBatchProcessingPreset(self, value):
         folderName = value
@@ -133,17 +114,9 @@ class CeciliaMainFrame(wx.Frame):
             presets.remove("init")
         if "last save" in presets:
             presets.remove("last save")
-        num_presets = len(presets)
-        dlg = wx.ProgressDialog("Batch processing on preset sequence",
-                                "", maximum=num_presets, parent=self,
-                                style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_SMOOTH)
-        dlg.SetMinSize((600, -1))
-        dlg.SetClientSize((600, 100))
-        if len(cfileins) > 0:
-            filepath = cfileins[0].filePath
-        count = 0
-        failed = []
-        for preset in presets:
+        filepath = cfileins[0].filePath if len(cfileins) > 0 else None
+
+        def prepare(preset):
             CeciliaLib.loadPresetFromFile(preset)
             # Files are written with the preferred export file type, so the
             # extension must match it (not the input sound's extension).
@@ -157,16 +130,73 @@ class CeciliaMainFrame(wx.Frame):
                 name = os.path.splitext(fname)[0]
             if not os.path.isdir(os.path.join(path, folderName)):
                 os.mkdir(os.path.join(path, folderName))
-            filename = os.path.join(path, folderName, "%s-%s%s" % (name, preset, ext))
-            count += 1
-            (keepGoing, skip) = dlg.Update(count, "Exporting %s" % filename)
+            return os.path.join(path, folderName, "%s-%s%s" % (name, preset, ext))
+
+        self._runBatch("Batch processing on preset sequence", presets, prepare, lambda: None)
+
+    def _runBatch(self, title, items, prepare, finish):
+        """Render `items` one after the other without blocking the event loop
+        between files, so the progress dialog stays live and Cancel works.
+
+        prepare(item) sets up the interface for one item and returns the output
+        file name. finish() restores state at the end (also after Cancel).
+        Each render itself still holds the interpreter until it is done."""
+        dlg = wx.ProgressDialog(title, "", maximum=max(1, len(items)), parent=self,
+                                style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_SMOOTH |
+                                      wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME)
+        dlg.SetMinSize((600, -1))
+        dlg.SetClientSize((600, 120))
+        state = {"index": 0, "failed": [], "filename": None, "cancelled": False}
+        self.batchRunner = state
+        server = CeciliaLib.getVar("audioServer")
+
+        def end():
+            finish()
+            dlg.Destroy()
+            self.batchRunner = None
+            if state["cancelled"]:
+                print("Batch processing cancelled after %d of %d files." % (state["index"], len(items)))
+            self._reportBatchFailures(state["failed"])
+
+        def startNext():
+            if state["index"] >= len(items) or state["cancelled"]:
+                end()
+                return
+            item = items[state["index"]]
+            filename = prepare(item)
+            state["filename"] = filename
+            state["index"] += 1
+            keepGoing, skip = dlg.Update(state["index"] - 1, "Exporting %s (%d of %d)" % (filename, state["index"], len(items)))
+            if not keepGoing:
+                state["cancelled"] = True
+                end()
+                return
+            # Run what the previous render queued (its end-of-render stop)
+            # now, so it can't stop the render about to start.
+            uibridge.flush()
             CeciliaLib.getControlPanel().onBatchProcessing(filename)
-            while (CeciliaLib.getVar("audioServer").isAudioServerRunning()):
-                time.sleep(.1)
-            if not self._isValidOutputFile(filename):
-                failed.append(filename)
-        dlg.Destroy()
-        self._reportBatchFailures(failed)
+            wx.CallLater(20, waitForRender)
+
+        def waitForRender():
+            if server.isAudioServerRunning():
+                wx.CallLater(20, waitForRender)
+                return
+            if not self._isValidOutputFile(state["filename"]):
+                state["failed"].append(state["filename"])
+            keepGoing, skip = dlg.Update(state["index"])
+            if not keepGoing:
+                state["cancelled"] = True
+            wx.CallAfter(startNext)
+
+        startNext()
+
+    def _isValidOutputFile(self, filename):
+        return os.path.isfile(filename) and os.path.getsize(filename) > 0
+
+    def _reportBatchFailures(self, failed):
+        if failed:
+            CeciliaLib.showErrorDialog("Batch processing error",
+                                       "%d file(s) could not be written:\n\n%s" % (len(failed), "\n".join(failed)))
 
     def onBatchProcessing(self, event):
         if event.GetId() == ID_BATCH_FOLDER:
