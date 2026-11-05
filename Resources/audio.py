@@ -1525,6 +1525,7 @@ class AudioServer():
             self.server.setJackAuto(True, True)
         self.setTimeCallable()
         self.timeOpened = True
+        self.endDialogPosted = self.endStopPosted = False
         self.recording = False
         self.withTimer = False
         self.withSpectrum = False
@@ -1561,6 +1562,7 @@ class AudioServer():
         if CeciliaLib.getVar("DEBUG"):
             print("Audio server start: begin")
         self.timeOpened = True
+        self.endDialogPosted = self.endStopPosted = False
         fade = CeciliaLib.getVar("globalFade")
         self.globalamp = Fader(fadein=fade, fadeout=fade, dur=CeciliaLib.getVar("totalTime")).play()
         self.out.mul = self.globalamp
@@ -1660,13 +1662,21 @@ class AudioServer():
         self.server._server.setTimeCallable(self)
 
     def setTime(self, *args):
+        # Called from the audio thread (or pyo's offline render thread) every
+        # few milliseconds of audio. GUI work must be deferred with CallAfter.
         if len(args) >= 4 and self.timeOpened:
             time = args[1] * 60 + args[2] + args[3] * 0.001
-            CeciliaLib.getVar("grapher").cursorPanel.setTime(time)
-            CeciliaLib.getVar("interface").controlPanel.setTime(time, args[1], args[2], args[3] // 10)
-            if time >= (CeciliaLib.getVar("totalTime") - 0.5):
+            if CeciliaLib.getVar("toDac"):
+                # Offline renders run much faster than realtime and nobody
+                # watches the clock; updating it would flood the event queue.
+                CeciliaLib.getVar("grapher").cursorPanel.setTime(time)
+                CeciliaLib.getVar("interface").controlPanel.setTime(time, args[1], args[2], args[3] // 10)
+            totalTime = CeciliaLib.getVar("totalTime")
+            if time >= (totalTime - 0.5) and not self.endDialogPosted:
+                self.endDialogPosted = True
                 wx.CallAfter(CeciliaLib.getControlPanel().closeBounceToDiskDialog)
-            if time >= (CeciliaLib.getVar("totalTime")):
+            if time >= totalTime and not self.endStopPosted:
+                self.endStopPosted = True
                 wx.CallAfter(CeciliaLib.stopCeciliaSound)
         else:
             CeciliaLib.getVar("grapher").cursorPanel.setTime(CeciliaLib.getVar("startOffset"))

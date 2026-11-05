@@ -63,6 +63,20 @@ MacOS::
     python3 Cecilia5.py
 
 
+Development and macOS app build (this fork)
+-------------------------------------------
+
+Set up a virtual environment (Python 3.11 to 3.13 have arm64 wheels for pyo and wxPython)::
+
+    python3.13 -m venv .venv
+    .venv/bin/pip install -r requirements.txt -r requirements-build.txt
+    .venv/bin/python Cecilia5.py
+
+Build ``dist/Cecilia5.app`` with PyInstaller (recipe in ``Cecilia5.spec``)::
+
+    ./scripts/build_macos_app.sh
+
+
 Screenshot
 ----------
 

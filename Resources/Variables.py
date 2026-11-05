@@ -19,41 +19,6 @@ along with Cecilia 5.  If not, see <http://www.gnu.org/licenses/>.
 """
 
 import sys, os, wx
-import ctypes, glob
-# -----------------------------------------------------------------------------
-# macOS dynamic-library loader fix
-# -----------------------------------------------------------------------------
-# On modern architectures (especially Apple-silicon) the native libsndfile that
-# ships with pyo expects to find libFLAC, libogg, etc. at their build-time rpath
-# (Homebrew's /opt/homebrew/opt/** paths).  If the user hasn't installed those
-# brew formulae, the dylibs actually live inside the pyo wheel itself.
-# Adding pyo's own directory to DYLD_FALLBACK_LIBRARY_PATH ensures the dynamic
-# loader can resolve the symbols without requiring extra system packages.
-# This patch must be executed BEFORE the first `import pyo`.
-
-if sys.platform.startswith('darwin') and 'DYLD_FALLBACK_LIBRARY_PATH' not in os.environ:
-    import importlib.util, pathlib
-    spec = importlib.util.find_spec('pyo')
-    if spec is not None:
-        pyo_dir = str(pathlib.Path(spec.origin).parent)
-        os.environ.setdefault('DYLD_FALLBACK_LIBRARY_PATH', pyo_dir)
-        # Also append the py2app Resources directory if running from a frozen
-        # application bundle – __boot__.py sets the RESOURCEPATH env var.
-        res_dir = os.environ.get('RESOURCEPATH')
-        if res_dir:
-            os.environ['DYLD_FALLBACK_LIBRARY_PATH'] = os.pathsep.join([pyo_dir, res_dir])
-            search_dirs = [pyo_dir, res_dir]
-        else:
-            search_dirs = [pyo_dir]
-        # Pre-load bundled dylibs from every search dir.
-        for sdir in search_dirs:
-            for pattern in ["libFLAC*.dylib", "libogg*.dylib", "libvorbis*.dylib", "libsndfile*.dylib"]:
-                for dylib in glob.glob(os.path.join(sdir, pattern)):
-                    try:
-                        ctypes.CDLL(dylib)
-                    except OSError:
-                        pass
-
 import unicodedata
 from .constants import *
 from pyo import pa_get_default_devices_from_host
