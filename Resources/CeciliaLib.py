@@ -27,6 +27,7 @@ from .API_interface import *
 import Resources.Variables as vars
 import wx.lib.agw.supertooltip as STT
 import xmlrpc.client as xmlrpclib
+from . import profiling
 
 if sys.version_info[0] < 3:
     unicode_t = unicode
@@ -234,6 +235,7 @@ def startCeciliaSound(timer=True, rec=False):
     getVar("presetPanel").presetChoice.setEnable(False)
     getControlPanel().durationSlider.Disable()
     getVar("audioServer").start(timer=timer, rec=rec)
+    profiling.done("play_latency")
     if getVar('showSpectrum'):
         getVar('mainFrame').openSpectrumWindow()
     getVar("grapher").toolbar.loadingMsg.SetForegroundColour(TITLE_BACK_COLOUR)

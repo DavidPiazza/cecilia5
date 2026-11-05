@@ -25,6 +25,7 @@ from .constants import *
 from .Widgets import *
 from .TogglePopup import SamplerPopup, SamplerToggle
 from .Plugins import *
+from . import profiling
 
 class CECControl(scrolled.ScrolledPanel):
     def __init__(self, parent, id=-1, size=(-1, -1), style=wx.BORDER_SIMPLE):
@@ -524,6 +525,7 @@ class CECControl(scrolled.ScrolledPanel):
 
     def onPlayStop(self, value):
         if value:
+            profiling.mark("play_latency")
             self.nonZeroTime = 0
             CeciliaLib.setVar("toDac", True)
             CeciliaLib.getVar("grapher").toolbar.loadingMsg.SetForegroundColour("#FFFFFF")
@@ -534,6 +536,7 @@ class CECControl(scrolled.ScrolledPanel):
 
     def onRec(self, value):
         if value:
+            profiling.mark("play_latency")
             if self.outputFilename != '':
                 filename = CeciliaLib.autoRename(self.outputFilename)
                 self.filenameLabel.setLabel(CeciliaLib.shortenName(os.path.split(filename)[1], self.charNumForLabel))

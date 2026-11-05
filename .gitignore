@@ -64,3 +64,6 @@ target/
 
 # Local virtual environment
 .venv/
+
+# Golden-render results (scripts/render_all_modules.py)
+.golden/
