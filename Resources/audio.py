@@ -29,6 +29,15 @@ if CeciliaLib.getVar("samplePrecision") == '64 bit':
 else:
     from pyo import *
 
+from . import uibridge
+
+
+def postToWidget(widget, method, *args):
+    """From the audio thread: call widget.<method>(*args) on the main thread.
+    Only the latest pending call per widget/method is kept."""
+    uibridge.latest((id(widget), method), getattr(widget, method), *args)
+
+
 class CeciliaFilein:
     def __init__(self, parent, name):
         self.parent = parent
@@ -295,6 +304,10 @@ class CeciliaSampler:
             self.mix = Input(chnl=[x for x in range(chnls)], mul=0.7)
 
     def setValueFromOSC(self, val, name):
+        # audio thread
+        uibridge.latest((id(self), "osc", name), self._applyValueFromOSC, val, name)
+
+    def _applyValueFromOSC(self, val, name):
         if self.mode != 1:
             if name == 'start':
                 val = rescale(val, ymin=self.start_mini, ymax=self.start_maxi)
@@ -339,26 +352,30 @@ class CeciliaSampler:
         if self.mode != 1:
             if self.start_midi and not self.start_play:
                 val = self.start.get()
-                wx.CallAfter(self.sampler.getSamplerFrame().loopInSlider.setValue, val)
+                postToWidget(self.sampler.getSamplerFrame().loopInSlider, 'setValue', val)
             if self.dur_midi and not self.dur_play:
                 val = self.dur.get()
-                wx.CallAfter(self.sampler.getSamplerFrame().loopOutSlider.setValue, val)
+                postToWidget(self.sampler.getSamplerFrame().loopOutSlider, 'setValue', val)
             if self.xfade_midi and not self.xfade_play:
                 val = self.xfade.get()
-                wx.CallAfter(self.sampler.getSamplerFrame().loopXSlider.setValue, val)
+                postToWidget(self.sampler.getSamplerFrame().loopXSlider, 'setValue', val)
             if self.gain_midi and not self.gain_play:
                 val = self.gain_in.get()
-                wx.CallAfter(self.sampler.getSamplerFrame().gainSlider.setValue, val)
+                postToWidget(self.sampler.getSamplerFrame().gainSlider, 'setValue', val)
             if self.pitch_midi and not self.pitch_play:
                 val = self.pitch_in.get()
-                wx.CallAfter(self.sampler.getSamplerFrame().transpSlider.setValue, val)
+                postToWidget(self.sampler.getSamplerFrame().transpSlider, 'setValue', val)
 
     def newMidiPitch(self):
+        # audio thread
         if not self.pitch_midi:
-            pit = self.checkNoteIn.get()
-            self.sampler.getSamplerFrame().transpSlider.setValue(pit - 60)
-            if not self.sampler.getSamplerFrame().transpSlider.slider.IsShownOnScreen():
-                self.sampler.getSamplerFrame().transpSlider.sendValue(pit - 60)
+            uibridge.latest((id(self), "midipitch"), self._applyMidiPitch, self.checkNoteIn.get())
+
+    def _applyMidiPitch(self, pit):
+        transpSlider = self.sampler.getSamplerFrame().transpSlider
+        transpSlider.setValue(pit - 60)
+        if not transpSlider.slider.IsShownOnScreen():
+            transpSlider.sendValue(pit - 60)
 
     def setGraph(self, which, func):
         if self.mode != 1:
@@ -522,11 +539,11 @@ class CeciliaSlider:
 
     def updateWidget(self):
         val = self.reader.get()
-        wx.CallAfter(self.widget.setValue, val)
+        postToWidget(self.widget, 'setValue', val)
 
     def setValueFromOSC(self, val):
         val = rescale(val, ymin=self.widget.getMinValue(), ymax=self.widget.getMaxValue(), ylog=self.widget.getLog())
-        wx.CallAfter(self.widget.setValue, val)
+        postToWidget(self.widget, 'setValue', val)
 
 class CeciliaRange:
     def __init__(self, dic, baseModule):
@@ -628,11 +645,11 @@ class CeciliaRange:
 
     def updateWidget(self):
         val = self.reader.get(all=True)
-        wx.CallAfter(self.widget.setValue, val)
+        postToWidget(self.widget, 'setValue', val)
 
     def setValueFromOSC(self, val, which):
         val = rescale(val, ymin=self.widget.getMinValue(), ymax=self.widget.getMaxValue(), ylog=self.widget.getLog())
-        wx.CallAfter(self.widget.setOneValue, val, which)
+        postToWidget(self.widget, 'setOneValue', val, which)
 
 class CeciliaSplitter:
     def __init__(self, dic):
@@ -704,7 +721,7 @@ class CeciliaSplitter:
 
     def updateWidget(self):
         val = self.reader.get(all=True)
-        wx.CallAfter(self.widget.setValue, val)
+        postToWidget(self.widget, 'setValue', val)
 
 class CeciliaGraph:
     def __init__(self, dic):
@@ -1228,13 +1245,13 @@ class CeciliaPlugin:
     def updateWidget(self):
         if self.play_p1 or self.midi_p1:
             val = self.reader_p1.get()
-            wx.CallAfter(self.widget_p1.setValue, val)
+            postToWidget(self.widget_p1, 'setValue', val)
         if self.play_p2 or self.midi_p2:
             val = self.reader_p2.get()
-            wx.CallAfter(self.widget_p2.setValue, val)
+            postToWidget(self.widget_p2, 'setValue', val)
         if self.play_p3 or self.midi_p3:
             val = self.reader_p3.get()
-            wx.CallAfter(self.widget_p3.setValue, val)
+            postToWidget(self.widget_p3, 'setValue', val)
 
 class CeciliaNonePlugin(CeciliaPlugin):
     def __init__(self, input):
@@ -1507,6 +1524,26 @@ class CeciliaChaosModPlugin(CeciliaPlugin):
                 self.lfo.value = self.lforo.play()
             self.out.interp = 1
 
+class _MeterForwarder:
+    """pyo's amplitude callback object. pyo calls setRms() from the audio
+    thread; the meter is redrawn on the main thread with the latest levels and
+    the loudest level seen since the previous redraw (so peaks aren't lost)."""
+    def __init__(self, meter):
+        self.meter = meter
+        self.peak = 0.0
+
+    def setRms(self, *args):
+        if args and args[0] >= 0:
+            loudest = max(args)
+            if loudest > self.peak:
+                self.peak = loudest
+        uibridge.latest((id(self.meter), "rms"), self._apply, args)
+
+    def _apply(self, args):
+        peak, self.peak = self.peak, 0.0
+        self.meter.setRms(*args, peak=peak)
+
+
 class AudioServer():
     def __init__(self):
         self.amp = 1.0
@@ -1570,6 +1607,7 @@ class AudioServer():
             if CeciliaLib.getVar("DEBUG"):
                 print("Audio server start: use midi")
                 print("midi input device: %d" % CeciliaLib.getVar("midiDeviceIn"))
+            self.gainSliderWidget = CeciliaLib.getControlPanel().gainSlider
             self.checkCtl7 = Midictl(ctlnumber=7, minscale=-48, maxscale=18, init=0)
             self.onNewCtl7Value = Change(self.checkCtl7)
             self.ctl7TrigFunc = TrigFunc(self.onNewCtl7Value, self.newCtl7Value)
@@ -1610,6 +1648,7 @@ class AudioServer():
             self.spectrum.poll(False)
             self.spectrum.stop()
         self.timeOpened = False
+        uibridge.clear_latest()
         if CeciliaLib.getVar("grapher") is not None:
             CeciliaLib.getVar("grapher").cursorPanel.setTime(CeciliaLib.getVar("startOffset"))
         time.sleep(.15)
@@ -1655,32 +1694,42 @@ class AudioServer():
             sampletype = CeciliaLib.getExportSampleType()
             self.server.recordOptions(dur=dur, filename=filename, fileformat=fileformat, sampletype=sampletype)
 
-    def setAmpCallable(self, callable):
-        self.server._server.setAmpCallable(callable)
+    def setAmpCallable(self, meter):
+        self.server._server.setAmpCallable(_MeterForwarder(meter))
 
     def setTimeCallable(self):
         self.server._server.setTimeCallable(self)
 
     def setTime(self, *args):
         # Called from the audio thread (or pyo's offline render thread) every
-        # few milliseconds of audio. GUI work must be deferred with CallAfter.
+        # few milliseconds of audio. Never touch widgets here: post to uibridge.
         if len(args) >= 4 and self.timeOpened:
             time = args[1] * 60 + args[2] + args[3] * 0.001
             if CeciliaLib.getVar("toDac"):
                 # Offline renders run much faster than realtime and nobody
-                # watches the clock; updating it would flood the event queue.
-                CeciliaLib.getVar("grapher").cursorPanel.setTime(time)
-                CeciliaLib.getVar("interface").controlPanel.setTime(time, args[1], args[2], args[3] // 10)
+                # watches the clock, so it is only updated when playing.
+                uibridge.latest("clock", self._showTime, time, args[1], args[2], args[3] // 10)
             totalTime = CeciliaLib.getVar("totalTime")
             if time >= (totalTime - 0.5) and not self.endDialogPosted:
                 self.endDialogPosted = True
-                wx.CallAfter(CeciliaLib.getControlPanel().closeBounceToDiskDialog)
+                uibridge.event(self._closeBounceDialog)
             if time >= totalTime and not self.endStopPosted:
                 self.endStopPosted = True
-                wx.CallAfter(CeciliaLib.stopCeciliaSound)
+                uibridge.event(CeciliaLib.stopCeciliaSound)
         else:
-            CeciliaLib.getVar("grapher").cursorPanel.setTime(CeciliaLib.getVar("startOffset"))
-            CeciliaLib.getVar("interface").controlPanel.setTime(0, 0, 0, 0)
+            uibridge.latest("clock", self._resetTime)
+
+    def _showTime(self, time, m, s, c):
+        CeciliaLib.getVar("grapher").cursorPanel.setTime(time)
+        CeciliaLib.getVar("interface").controlPanel.setTime(time, m, s, c)
+
+    def _resetTime(self):
+        CeciliaLib.getVar("grapher").cursorPanel.setTime(CeciliaLib.getVar("startOffset"))
+        CeciliaLib.getVar("interface").controlPanel.setTime(0, 0, 0, 0)
+
+    def _closeBounceDialog(self):
+        if CeciliaLib.getControlPanel() is not None:
+            CeciliaLib.getControlPanel().closeBounceToDiskDialog()
 
     def recstart(self):
         self.server.recstart()
@@ -1689,8 +1738,8 @@ class AudioServer():
         self.server.recstop()
 
     def newCtl7Value(self):
-        val = self.checkCtl7.get()
-        CeciliaLib.getControlPanel().gainSlider.SetValue(val)
+        # audio thread
+        postToWidget(self.gainSliderWidget, 'SetValue', self.checkCtl7.get())
 
     def setAmp(self, x):
         self.amp = math.pow(10.0, x * 0.05)
@@ -1954,13 +2003,17 @@ class AudioServer():
                 self.pluginObjs[order].setGraph(which, func)
 
     def getMidiCtlNumber(self, number, midichnl=1):
+        # audio thread (CtlScan2 callback)
+        uibridge.event(self._applyMidiCtlNumber, number, midichnl)
+
+    def _applyMidiCtlNumber(self, number, midichnl):
+        if self.midiLearnSlider is None:
+            return  # already learned; later controller moves are ignored
         if not self.midiLearnRange:
             self.midiLearnSlider.setMidiChannel(midichnl)
             self.midiLearnSlider.setMidiCtl(number)
-            if CeciliaLib.getVar("systemPlatform") == "darwin":
-                self.tmpScanCallback = CallAfter(self.stop, .25)
-            else:
-                wx.CallLater(250, self.stop)
+            self.midiLearnSlider = None
+            wx.CallLater(250, self.stop)
         else:
             tmp = [number, midichnl]
             if tmp not in self.midiLearnCtlsAndChnls:
@@ -1968,10 +2021,8 @@ class AudioServer():
                 if len(self.midiLearnCtlsAndChnls) == 2:
                     self.midiLearnSlider.setMidiChannel([self.midiLearnCtlsAndChnls[0][1], self.midiLearnCtlsAndChnls[1][1]])
                     self.midiLearnSlider.setMidiCtl([self.midiLearnCtlsAndChnls[0][0], self.midiLearnCtlsAndChnls[1][0]])
-                    if CeciliaLib.getVar("systemPlatform") == "darwin":
-                        self.tmpScanCallback = CallAfter(self.stop, .25)
-                    else:
-                        wx.CallLater(250, self.stop)
+                    self.midiLearnSlider = None
+                    wx.CallLater(250, self.stop)
 
     def midiLearn(self, slider, rangeSlider=False):
         self.midiLearnSlider = slider

@@ -130,6 +130,7 @@ def run():
                     return
                 results[name] = profiling.stats()
                 results[name]["wall_s"] = round(time.time() - t0, 2)
+                results[name]["totalTime"] = round(C.getVar("totalTime"), 2)
                 log("%-8s %s" % (name, results[name]))
                 if cleanup:
                     cleanup()
@@ -148,7 +149,7 @@ def run():
     def sc_play():
         def go():
             cp = C.getControlPanel()
-            cp.setTotalTime(30, True)
+            cp.setTotalTime(30, True); cp.updateDurationSlider()  # else the slider's next repaint restores the old duration
             for s in C.getVar("userSliders"):
                 if hasattr(s, "setPlay"):
                     s.setPlay(1)
@@ -164,7 +165,7 @@ def run():
 
     def sc_bounce():
         def go():
-            C.getControlPanel().setTotalTime(20, True)
+            C.getControlPanel().setTotalTime(20, True); C.getControlPanel().updateDurationSlider()  # else the slider's next repaint restores the old duration
             out = os.path.join(WORK, "bounce.wav")
             t = {}
 
@@ -176,7 +177,7 @@ def run():
 
     def sc_batch():
         def go():
-            C.getControlPanel().setTotalTime(5, True)
+            C.getControlPanel().setTotalTime(5, True); C.getControlPanel().updateDurationSlider()  # else the slider's next repaint restores the old duration
             t = {}
 
             def start():

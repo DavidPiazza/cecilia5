@@ -4330,17 +4330,23 @@ class VuMeter(wx.Panel):
         if CeciliaLib.getVar("interface") is not None:
             CeciliaLib.getVar("interface").Layout()
 
-    def setRms(self, *args):
-        if args[0] < 0:
-            return
+    def setRms(self, *args, peak=None):
+        # Main thread (the engine posts levels through uibridge). `peak` is the
+        # loudest linear level since the previous call, so short peaks between
+        # two redraws still reach the peak label.
         if not args:
             self.amplitude = [0 for i in range(self.nchnls)]
+        elif args[0] < 0:
+            return
         else:
-            self.amplitude = args
-        self.amplitude = [math.log10(amp + 0.00001) * 0.2 + 1. for amp in self.amplitude]
-        if self.seekPeak():
+            self.amplitude = [math.log10(amp + 0.00001) * 0.2 + 1. for amp in args]
+        loudest = max(self.amplitude) if self.amplitude else 0
+        if peak is not None:
+            loudest = max(loudest, math.log10(peak + 0.00001) * 0.2 + 1.)
+        if loudest > self.peak:
+            self.peak = loudest
             CeciliaLib.getControlPanel().updatePeak(self.peak)
-        wx.CallAfter(self.Refresh)
+        self.Refresh()
 
     def OnPaint(self, event):
         w, h = self.GetSize()
@@ -4362,13 +4368,6 @@ class VuMeter(wx.Panel):
     def reset(self):
         self.amplitude = [0 for i in range(self.nchnls)]
         wx.CallAfter(self.Refresh)
-
-    def seekPeak(self):
-        newPeak = False
-        if max(self.amplitude) > self.peak:
-            self.peak = max(self.amplitude)
-            newPeak = True
-        return newPeak
 
     def getPeak(self):
         return self.peak

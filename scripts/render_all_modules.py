@@ -209,7 +209,7 @@ def run():
             cp = C.getControlPanel()
             for cf in cp.getCfileinList():
                 cf.onLoadFile(TEST_SOUND)
-            cp.setTotalTime(args.dur, True)
+            cp.setTotalTime(args.dur, True); cp.updateDurationSlider()  # else the slider's next repaint restores the old duration
             C.setVar("nchnls", 2)
             C.setVar("audioFileType", "wav")
             C.setVar("sampSize", 0)

@@ -28,7 +28,7 @@ import Resources.CeciliaInterface as CeciliaInterface
 from .menubar import InterfaceMenuBar
 from .Widgets import *
 from .DocFrame import ManualFrame
-from . import profiling
+from . import profiling, uibridge
 
 class CeciliaMainFrame(wx.Frame):
     def __init__(self, parent, ID):
@@ -39,6 +39,7 @@ class CeciliaMainFrame(wx.Frame):
         self.time = 0
         self.api_doc_frame = ManualFrame(kind="api")
         self.mod_doc_frame = ManualFrame(kind="modules")
+        uibridge.install(self)
         profiling.install(self)
 
     def setTime(self, curTime=0):
