@@ -18,12 +18,17 @@ You should have received a copy of the GNU General Public License
 along with Cecilia 5.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import os, math, copy, time, traceback, sys
+import os, math, copy, time, traceback, sys, random
 from .constants import *
 from .API_interface import *
-from .Variables import CeciliaVar as _prefs
 
-if _prefs["samplePrecision"] == '64 bit':
+# Set by the interface when it starts the engine process (engine_client.py).
+_precision = os.environ.get("CECILIA_SAMPLE_PRECISION")
+if _precision is None:
+    from .Variables import CeciliaVar as _prefs
+    _precision = _prefs["samplePrecision"]
+
+if _precision == '64 bit':
     from pyo64 import *
 else:
     from pyo import *
@@ -1419,7 +1424,7 @@ class AudioServer():
                 "isRunning", "isBooted", "setAmp", "setSlider", "callModule", "samplerCall",
                 "setGraph", "setSliderGraph", "setSamplerGraph", "setPluginGraph",
                 "setPlugin", "movePlugin", "setPluginValue", "setPluginPreset",
-                "midiLearn", "spectrumCall", "shutdown")
+                "midiLearn", "spectrumCall", "shutdown", "testSeed")
 
     def __init__(self, sink, cfg):
         global _engine
@@ -1451,6 +1456,10 @@ class AudioServer():
         self.withSpectrum = False
         self.pluginObjs = [None] * NUM_OF_PLUGINS
         self.out = self.spectrum = None
+        self.seed = None             # see testSeed()
+        # In the engine process, the end of an offline render is reported
+        # when the server has actually stopped (see engine_process.py).
+        self.deferOfflineEnd = False
         self.pluginDict = {"Reverb": CeciliaReverbPlugin, "WGVerb": CeciliaWGReverbPlugin, "Filter": CeciliaFilterPlugin, "Para EQ": CeciliaEQPlugin,
                            "Chorus": CeciliaChorusPlugin, "3 Bands EQ": CeciliaEQ3BPlugin, "Compress": CeciliaCompressPlugin, "Gate": CeciliaGatePlugin,
                            "Disto": CeciliaDistoPlugin, "AmpMod": CeciliaAmpModPlugin, "Phaser": CeciliaPhaserPlugin, "Delay": CeciliaDelayPlugin,
@@ -1502,6 +1511,9 @@ class AudioServer():
         self.configure(snapshot["prefs"])
         self.shutdown()
         self.reinit()
+        if self.seed is not None:
+            self.server.setGlobalSeed(self.seed)
+            random.seed(self.seed)
         self.boot()
         if self.moduleClass is None:
             return False, None
@@ -1656,6 +1668,11 @@ class AudioServer():
     def shutdown(self):
         self.server.shutdown()
 
+    def testSeed(self, seed):
+        """Test tools only: seeds pyo and Python's random module before each
+        play, so renders are repeatable."""
+        self.seed = seed
+
     ###### Internals ######
     def getPrefs(self):
         c = self.cfg
@@ -1731,15 +1748,15 @@ class AudioServer():
         # few milliseconds of audio. Only sends events.
         if len(args) >= 4 and self.timeOpened:
             time = args[1] * 60 + args[2] + args[3] * 0.001
-            if self.cfg["toDac"]:
-                # Offline renders run much faster than realtime and nobody
-                # watches the clock, so it is only updated when playing.
-                _emit(("clock",), (time, args[1], args[2], args[3] // 10))
+            # (offline, the clock shows the progress of the render)
+            _emit(("clock",), (time, args[1], args[2], args[3] // 10))
             totalTime = self.cfg["totalTime"]
             if time >= (totalTime - 0.5) and not self.endDialogPosted:
                 self.endDialogPosted = True
                 _event("near_end")
-            if time >= totalTime and not self.endStopPosted:
+            if self.deferOfflineEnd and not self.cfg["toDac"]:
+                pass
+            elif time >= totalTime and not self.endStopPosted:
                 self.endStopPosted = True
                 _event("end")
         else:

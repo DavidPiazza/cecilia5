@@ -348,11 +348,15 @@ def finish():
 def run():
     CL = C()
     CL.showErrorDialog = lambda title, msg: problems.append("dialog %s: %s" % (title, msg[:300]))
-    srv = audio_server()
-    orig = srv.reinit
-    def seeded():
-        orig(); srv.server.setGlobalSeed(1234)
-    srv.reinit = seeded
+    engine = CL.getEngine() if hasattr(CL, "getEngine") else None
+    if engine is not None and hasattr(engine, "testSeed"):
+        engine.testSeed(1234)
+    else:
+        srv = audio_server()
+        orig = srv.reinit
+        def seeded():
+            orig(); srv.server.setGlobalSeed(1234)
+        srv.reinit = seeded
     gen = scenarios()
     def step():
         try:

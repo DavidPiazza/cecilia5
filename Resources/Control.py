@@ -574,16 +574,37 @@ class CECControl(scrolled.ScrolledPanel):
         self.bounce_dlg = wx.Dialog(CeciliaLib.getVar('interface'), -1, "Bounce to disk")
         sizer = wx.BoxSizer(wx.VERTICAL)
         self.bounce_label = wx.StaticText(self.bounce_dlg, -1, "Writing %s on disk..." % self.outputFilename)
-        sizer.Add(self.bounce_label, 0, wx.ALIGN_CENTRE | wx.ALL, 25)
+        sizer.Add(self.bounce_label, 0, wx.ALIGN_CENTRE | wx.LEFT | wx.RIGHT | wx.TOP, 25)
+        self.bounce_gauge = wx.Gauge(self.bounce_dlg, -1, range=1000, size=(400, -1))
+        sizer.Add(self.bounce_gauge, 0, wx.EXPAND | wx.ALL, 15)
+        cancel = wx.Button(self.bounce_dlg, wx.ID_CANCEL, "Cancel")
+        cancel.Bind(wx.EVT_BUTTON, self.onCancelBounce)
+        self.bounce_dlg.Bind(wx.EVT_CLOSE, self.onCancelBounce)
+        sizer.Add(cancel, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, 15)
         self.bounce_dlg.SetSizerAndFit(sizer)
         self.bounce_dlg.CenterOnParent()
         self.bounce_dlg.Show()
+
+    def setBounceProgress(self, fraction):
+        try:
+            self.bounce_gauge.SetValue(int(max(0.0, min(1.0, fraction)) * 1000))
+        except (AttributeError, RuntimeError):
+            pass  # no dialog (batch) or already closed
+
+    def onCancelBounce(self, evt=None):
+        """Stops the render and removes the unfinished file."""
+        CeciliaLib.getEngine().abort()
+        self.closeBounceToDiskDialog()
+        CeciliaLib.resetControls()
+        CeciliaLib.removeUnfinishedFile(CeciliaLib.getVar("outputFile"))
 
     def closeBounceToDiskDialog(self):
         try:
             self.bounce_dlg.Destroy()
         except:
             pass
+        self.bounce_dlg = None
+        self.bounce_gauge = None
 
     def onBatchProcessing(self, filename):
         self.outputFilename = filename

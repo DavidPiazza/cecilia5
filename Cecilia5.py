@@ -20,6 +20,13 @@ You should have received a copy of the GNU General Public License
 along with Cecilia 5.  If not, see <http://www.gnu.org/licenses/>.
 """
 import os, sys, random
+
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == "--cecilia-engine":
+    # The app bundle runs its audio engine process with this executable
+    # (see Resources/engine_process.py).
+    from Resources import engine_process
+    engine_process.main()
+
 import wx
 from Resources.constants import *
 from Resources.Variables import loadBitmaps
@@ -68,7 +75,7 @@ def onStart():
 
 if __name__ == '__main__':
 
-    CeciliaLib.setVar("engine", engine_client.LocalEngine())
+    CeciliaLib.setVar("engine", engine_client.createEngine())
 
     try:
         CeciliaLib.queryAudioMidiDrivers()

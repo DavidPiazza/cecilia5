@@ -164,13 +164,7 @@ def run():
     dialogs = []
     C.showErrorDialog = lambda title, msg: dialogs.append("%s: %s" % (title, msg))
 
-    server = C.getEngine().server  # the AudioServer (LocalEngine)
-    orig_reinit = server.reinit
-
-    def seeded_reinit():
-        orig_reinit()
-        server.server.setGlobalSeed(1234)
-    server.reinit = seeded_reinit
+    C.getEngine().testSeed(1234)  # pyo's and Python's random, before each render
 
     C.setVar("audioFileType", "wav")
     C.setVar("sampSize", 0)  # 16 bit int

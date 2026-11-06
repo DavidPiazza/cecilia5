@@ -226,8 +226,19 @@ def startCeciliaSound(timer=True, rec=False):
         showErrorDialog("Wow...!", "No module to load.")
         return
     from . import snapshot
-    ok, error = getEngine().play(snapshot.build(), timer=timer, rec=rec)
+    engine = getEngine()
+    stopCount = engine.stopCount
+    engine.playAsync(snapshot.build(), timer, rec,
+                     lambda ok, error: _onPlayStarted(ok, error, timer, stopCount))
+
+def _onPlayStarted(ok, error, timer, stopCount):
+    """The engine has started playing (or failed to)."""
     if not ok:
+        if error is None:
+            # The engine process stopped: it is restarted and the user told
+            # (engine_client._onEngineDied).
+            resetControls()
+            return
         # The module failed to run: show why, then reload the last module
         # that ran (or a random one).
         setVar("currentModule", None)
@@ -237,6 +248,8 @@ def startCeciliaSound(timer=True, rec=False):
         else:
             getVar("mainFrame").onOpenRandom(None)
         return
+    if getEngine().stopCount != stopCount:
+        return  # stopped before it had started; stopCeciliaSound did the rest
     setVar("currentModule", True)
     saveRuntimeBackupFile(getVar("currentCeciliaFile"))
     getVar("grapher").toolbar.convertSlider.Hide()
@@ -266,6 +279,14 @@ def stopCeciliaSound():
             getEngine().writeAutomation()
             getVar("grapher").checkForAutomation()
     resetControls()
+
+def removeUnfinishedFile(path):
+    """Deletes the output of a render that was cancelled."""
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 def getEngine():
     """The audio engine (see Resources/engine_client.py)."""

@@ -140,8 +140,10 @@ class CeciliaMainFrame(wx.Frame):
 
         prepare(item) sets up the interface for one item and returns the output
         file name. finish() restores state at the end (also after Cancel).
-        Each render itself still holds the interpreter until it is done."""
-        dlg = wx.ProgressDialog(title, "", maximum=max(1, len(items)), parent=self,
+        The renders run in the engine process, so Cancel also works during a
+        render."""
+        STEPS = 100  # progress steps per file
+        dlg = wx.ProgressDialog(title, "", maximum=max(1, len(items)) * STEPS, parent=self,
                                 style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_SMOOTH |
                                       wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME)
         dlg.SetMinSize((600, -1))
@@ -166,7 +168,7 @@ class CeciliaMainFrame(wx.Frame):
             filename = prepare(item)
             state["filename"] = filename
             state["index"] += 1
-            keepGoing, skip = dlg.Update(state["index"] - 1, "Exporting %s (%d of %d)" % (filename, state["index"], len(items)))
+            keepGoing, skip = dlg.Update((state["index"] - 1) * STEPS, "Exporting %s (%d of %d)" % (filename, state["index"], len(items)))
             if not keepGoing:
                 state["cancelled"] = True
                 end()
@@ -174,16 +176,28 @@ class CeciliaMainFrame(wx.Frame):
             # Run what the previous render queued (its end-of-render stop)
             # now, so it can't stop the render about to start.
             uibridge.flush()
+            engine_client.renderTime = 0.0
             CeciliaLib.getControlPanel().onBatchProcessing(filename)
             wx.CallLater(20, waitForRender)
 
         def waitForRender():
             if engine.isRunning():
-                wx.CallLater(20, waitForRender)
+                total = CeciliaLib.getVar("totalTime")
+                fraction = min(1.0, engine_client.renderTime / total) if total > 0 else 0.0
+                keepGoing, skip = dlg.Update((state["index"] - 1) * STEPS + int(fraction * (STEPS - 1)))
+                if not keepGoing:
+                    engine.abort()
+                    CeciliaLib.removeUnfinishedFile(state["filename"])
+                    state["index"] -= 1
+                    state["cancelled"] = True
+                    CeciliaLib.resetControls()
+                    end()
+                    return
+                wx.CallLater(50, waitForRender)
                 return
             if not self._isValidOutputFile(state["filename"]):
                 state["failed"].append(state["filename"])
-            keepGoing, skip = dlg.Update(state["index"])
+            keepGoing, skip = dlg.Update(state["index"] * STEPS)
             if not keepGoing:
                 state["cancelled"] = True
             wx.CallAfter(startNext)
@@ -390,6 +404,7 @@ class CeciliaMainFrame(wx.Frame):
         if CeciliaLib.getEngine().isRunning():
             CeciliaLib.getEngine().stop()
             time.sleep(.2)
+        CeciliaLib.getEngine().close()
 
         if CeciliaLib.getVar('spectrumFrame') is not None:
             try:
