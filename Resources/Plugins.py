@@ -257,7 +257,7 @@ class PluginKnob(ControlKnob):
                     self.setMidiCtl(None)
                 else:
                     if CeciliaLib.getVar("useMidi"):
-                        CeciliaLib.getVar("audioServer").midiLearn(self)
+                        CeciliaLib.startMidiLearn(self)
                         self.inMidiLearnMode()
                     else:
                         CeciliaLib.showErrorDialog("Midi not initialized!",
@@ -317,21 +317,21 @@ class Plugin(wx.Panel):
     def onChangeKnob1(self, x):
         if self.knob1.getState()[1] in [0, 1]:
             if CeciliaLib.getVar("currentModule") is not None:
-                CeciliaLib.getVar("audioServer").setPluginValue(self.vpos, 0, x)
+                CeciliaLib.getEngine().setPluginValue(self.vpos, self.getName(), 0, x)
 
     def onChangeKnob2(self, x):
         if self.knob2.getState()[1] in [0, 1]:
             if CeciliaLib.getVar("currentModule") is not None:
-                CeciliaLib.getVar("audioServer").setPluginValue(self.vpos, 1, x)
+                CeciliaLib.getEngine().setPluginValue(self.vpos, self.getName(), 1, x)
 
     def onChangeKnob3(self, x):
         if self.knob3.getState()[1] in [0, 1]:
             if CeciliaLib.getVar("currentModule") is not None:
-                CeciliaLib.getVar("audioServer").setPluginValue(self.vpos, 2, x)
+                CeciliaLib.getEngine().setPluginValue(self.vpos, self.getName(), 2, x)
 
     def onChangePreset(self, x, label=None):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("audioServer").setPluginPreset(self.vpos, x, label)
+            CeciliaLib.getEngine().setPluginPreset(self.vpos, self.getName(), x, label)
 
     def createHeadBox(self):
         self.SetFont(wx.Font(CONTROLSLIDER_FONT, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))

@@ -18,37 +18,76 @@ You should have received a copy of the GNU General Public License
 along with Cecilia 5.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import wx
 import os, math, copy, time, traceback, sys
-import Resources.CeciliaLib as CeciliaLib
 from .constants import *
 from .API_interface import *
+from .Variables import CeciliaVar as _prefs
 
-if CeciliaLib.getVar("samplePrecision") == '64 bit':
+if _prefs["samplePrecision"] == '64 bit':
     from pyo64 import *
 else:
     from pyo import *
 
-from . import uibridge
+# The audio engine.
+#
+# Nothing in this file touches the wx interface. The interface describes the
+# module to play with a snapshot (plain data, see Resources/snapshot.py) and
+# drives the engine through the commands of AudioServer (see
+# Resources/engine_client.py). Everything the engine has to tell the
+# interface goes through the event sink given to AudioServer:
+#
+#   sink.latest(key, *args)  a value to display, only the newest one matters
+#   sink.event(name, *args)  something that happened, delivered in order
+#   sink.clear()             drop pending values (after stop)
+
+_engine = None    # the AudioServer
+_snapshot = None  # snapshot of the module being built
 
 
-def postToWidget(widget, method, *args):
-    """From the audio thread: call widget.<method>(*args) on the main thread.
-    Only the latest pending call per widget/method is kept."""
-    uibridge.latest((id(widget), method), getattr(widget, method), *args)
+def _cfg(key):
+    return _engine.cfg[key]
+
+
+def _emit(key, *args):
+    _engine.sink.latest(key, *args)
+
+
+def _event(name, *args):
+    _engine.sink.event(name, *args)
+
+
+_NO_LINE = {"name": "", "suffix": "", "data": [], "curved": False}
+
+
+def _line(name, suffix=None):
+    """First grapher line with this name (and suffix), as in the plotter."""
+    for line in _snapshot["lines"]:
+        if line["name"] == name and (suffix is None or line["suffix"] == suffix):
+            return line
+    return _NO_LINE
+
+
+def _lineData(line):
+    return [tuple(x) for x in line["data"]]
+
+
+def deepCopy(ori):
+    """Same as CeciliaLib.deepCopy: copies nested dicts/lists, tuples become lists."""
+    if type(ori) is dict:
+        return {key: deepCopy(ori[key]) for key in ori}
+    elif type(ori) in (list, tuple):
+        return [deepCopy(x) for x in ori]
+    return ori
 
 
 class CeciliaFilein:
     def __init__(self, parent, name):
         self.parent = parent
         self.name = name
-        info = CeciliaLib.getVar("userInputs")[name]
-        chnls = CeciliaLib.getVar("nchnls")
-        for filein in CeciliaLib.getControlPanel().cfileinList:
-            if filein.name == name:
-                break
-        offset = filein.getOffset()
-        mode = filein.getMode()
+        info = _snapshot["userInputs"][name]
+        chnls = _cfg("nchnls")
+        offset = _snapshot["fileins"][name]["offset"]
+        mode = _snapshot["fileins"][name]["mode"]
         if mode == 0:
             snd_chnls = info['nchnls' + self.name]
             if snd_chnls == 1:
@@ -71,16 +110,12 @@ class CeciliaSampler:
         self.name = name
         self.user_pitch = user_pitch
         self.user_amp = user_amp
-        info = CeciliaLib.getVar("userInputs")[name]
-        totalTime = CeciliaLib.getVar("totalTime")
-        chnls = CeciliaLib.getVar("nchnls")
-        samplerList = CeciliaLib.getVar("userSamplers")
-        for sampler in samplerList:
-            if sampler.name == name:
-                sinfo = sampler.getSamplerInfo()
-                break
-        self.sampler = sampler
-        self.mode = self.sampler.mode
+        info = _snapshot["userInputs"][name]
+        totalTime = _cfg("totalTime")
+        chnls = _cfg("nchnls")
+        self.sampler = _snapshot["samplers"][name]
+        sinfo = self.sampler["info"]
+        self.mode = self.sampler["mode"]
 
         self.start_play, self.start_midi = False, False
         self.dur_play, self.dur_midi = False, False
@@ -90,11 +125,11 @@ class CeciliaSampler:
 
         if self.mode != 1:
             graph_lines = {}
-            for line in CeciliaLib.getVar("grapher").plotter.getData():
-                if line.name.startswith(self.name):
-                    graph_lines[line.name] = line
+            for line in _snapshot["lines"]:
+                if line["name"].startswith(self.name):
+                    graph_lines[line["name"]] = line
 
-            paths = [slider.getPath() for slider in sampler.getSamplerSliders()]
+            paths = self.sampler["paths"]
 
             ################ start ################
             start_init, self.start_play, self.start_rec = sinfo['loopIn'][0], sinfo['loopIn'][1], sinfo['loopIn'][2]
@@ -106,7 +141,7 @@ class CeciliaSampler:
                 self.start_midi, start_midictl, start_midichnl, self.start_mini, self.start_maxi = False, None, 1, 0, 1
                 self.start_osc = None
             line = graph_lines[self.name + 'start']
-            curved = line.getCurved()
+            curved = line["curved"]
             if curved:
                 self.start_table = CosTable()
             else:
@@ -114,8 +149,7 @@ class CeciliaSampler:
             if not self.start_play and not self.start_midi:
                 self.start = SigTo(value=start_init, time=0.025, init=start_init)
             if self.start_play:
-                data = line.getData()
-                data = [tuple(x) for x in data]
+                data = _lineData(line)
                 self.setGraph('start', data)
                 self.start = TableRead(self.start_table, freq=1.0 / totalTime).play()
             elif self.start_midi:
@@ -135,7 +169,7 @@ class CeciliaSampler:
                 self.dur_midi, dur_midictl, dur_midichnl, self.dur_mini, self.dur_maxi = False, None, 1, 0, 1
                 self.dur_osc = None
             line = graph_lines[self.name + 'end']
-            curved = line.getCurved()
+            curved = line["curved"]
             if curved:
                 self.dur_table = CosTable()
             else:
@@ -143,8 +177,7 @@ class CeciliaSampler:
             if not self.dur_play and not self.dur_midi:
                 self.dur = SigTo(value=dur_init, time=0.025, init=dur_init)
             if self.dur_play:
-                data = line.getData()
-                data = [tuple(x) for x in data]
+                data = _lineData(line)
                 self.setGraph('end', data)
                 self.dur = TableRead(self.dur_table, freq=1.0 / totalTime).play()
             elif self.dur_midi:
@@ -163,7 +196,7 @@ class CeciliaSampler:
                 self.xfade_midi, xfade_midictl, xfade_midichnl = False, None, 1
                 self.xfade_osc = None
             line = graph_lines[self.name + 'xfade']
-            curved = line.getCurved()
+            curved = line["curved"]
             if curved:
                 self.xfade_table = CosTable()
             else:
@@ -171,8 +204,7 @@ class CeciliaSampler:
             if not self.xfade_play and not self.xfade_midi:
                 self.xfade = SigTo(value=xfade_init, time=0.025, init=xfade_init)
             if self.xfade_play:
-                data = line.getData()
-                data = [tuple(x) for x in data]
+                data = _lineData(line)
                 self.setGraph('xfade', data)
                 self.xfade = TableRead(self.xfade_table, freq=1.0 / totalTime).play()
             elif self.xfade_midi:
@@ -191,7 +223,7 @@ class CeciliaSampler:
                 self.gain_midi, gain_midictl, gain_midichnl = False, None, 1
                 self.gain_osc = None
             line = graph_lines[self.name + 'gain']
-            curved = line.getCurved()
+            curved = line["curved"]
             if curved:
                 self.gain_table = CosTable()
             else:
@@ -199,8 +231,7 @@ class CeciliaSampler:
             if not self.gain_play and not self.gain_midi:
                 self.gain_in = SigTo(value=gain_init, time=0.025, init=gain_init)
             if self.gain_play:
-                data = line.getData()
-                data = [tuple(x) for x in data]
+                data = _lineData(line)
                 self.setGraph('gain', data)
                 self.gain_in = TableRead(self.gain_table, freq=1.0 / totalTime).play()
             elif self.gain_midi:
@@ -220,7 +251,7 @@ class CeciliaSampler:
                 self.pitch_midi, pitch_midictl, pitch_midichnl = False, None, 1
                 self.pitch_osc = None
             line = graph_lines[self.name + 'trans']
-            curved = line.getCurved()
+            curved = line["curved"]
             if curved:
                 self.pitch_table = CosTable()
             else:
@@ -228,8 +259,7 @@ class CeciliaSampler:
             if not self.pitch_play and not self.pitch_midi:
                 self.pitch_in = SigTo(value=pitch_init, time=0.025, init=pitch_init)
             if self.pitch_play:
-                data = line.getData()
-                data = [tuple(x) for x in data]
+                data = _lineData(line)
                 self.setGraph('trans', data)
                 self.pitch_in = TableRead(self.pitch_table, freq=1.0 / totalTime).play()
             elif self.pitch_midi:
@@ -239,7 +269,7 @@ class CeciliaSampler:
             if self.pitch_rec:
                 self.pitch_record = ControlRec(self.pitch_in, filename=paths[4], rate=1000, dur=totalTime).play()
             self.pitch = Pow(1.0594630943593, self.pitch_in, self.user_pitch)
-            if CeciliaLib.getVar("automaticMidiBinding") and CeciliaLib.getVar("useMidi"):
+            if _cfg("automaticMidiBinding") and _cfg("useMidi"):
                 self.checkNoteIn = Notein(poly=1, scale=0, first=0, last=120)
                 self.onNewNote = Change(self.checkNoteIn["pitch"])
                 self.noteTrigFunc = TrigFunc(self.onNewNote, self.newMidiPitch)
@@ -247,14 +277,14 @@ class CeciliaSampler:
             if self.mode == 0:
                 self.table = SndTable(info['path'], start=info["off" + self.name])
             elif self.mode == 2:
-                self.table = NewTable(length=self.sampler.getOffset(), chnls=chnls)
+                self.table = NewTable(length=self.sampler["offset"], chnls=chnls)
                 self.livein = Input(chnl=[x for x in range(chnls)], mul=0.7)
                 self.filltabrec = TableRec(self.livein, self.table).play()
             elif self.mode == 3:
-                self.table = NewTable(length=self.sampler.getOffset(), chnls=chnls)
-                self.table2 = NewTable(length=self.sampler.getOffset(), chnls=chnls)
+                self.table = NewTable(length=self.sampler["offset"], chnls=chnls)
+                self.table2 = NewTable(length=self.sampler["offset"], chnls=chnls)
                 self.livein = Input(chnl=[x for x in range(chnls)], mul=0.7)
-                self.rectrig = Metro(time=self.sampler.getOffset(), poly=2).play()
+                self.rectrig = Metro(time=self.sampler["offset"], poly=2).play()
                 self.tmprec1 = TrigTableRec(self.livein, self.rectrig[0], self.table)
                 self.tmprec2 = TrigTableRec(self.livein, self.rectrig[1], self.table2)
                 self.morphind = Counter(self.rectrig.mix(1), min=0, max=2, dir=0)
@@ -305,81 +335,47 @@ class CeciliaSampler:
 
     def setValueFromOSC(self, val, name):
         # audio thread
-        uibridge.latest((id(self), "osc", name), self._applyValueFromOSC, val, name)
-
-    def _applyValueFromOSC(self, val, name):
         if self.mode != 1:
             if name == 'start':
                 val = rescale(val, ymin=self.start_mini, ymax=self.start_maxi)
-                self.sampler.getSamplerFrame().loopInSlider.setValue(val)
-                if not self.sampler.getSamplerFrame().loopInSlider.slider.IsShownOnScreen():
-                    self.sampler.getSamplerFrame().loopInSlider.sendValue(val)
             elif name == 'dur':
                 val = rescale(val, ymin=self.dur_mini, ymax=self.dur_maxi)
-                self.sampler.getSamplerFrame().loopOutSlider.setValue(val)
-                if not self.sampler.getSamplerFrame().loopOutSlider.slider.IsShownOnScreen():
-                    self.sampler.getSamplerFrame().loopOutSlider.sendValue(val)
             elif name == 'xfade':
                 val = rescale(val, ymin=0, ymax=50)
-                self.sampler.getSamplerFrame().loopXSlider.setValue(val)
-                if not self.sampler.getSamplerFrame().loopXSlider.slider.IsShownOnScreen():
-                    self.sampler.getSamplerFrame().loopXSlider.sendValue(val)
             elif name == 'gain':
                 val = rescale(val, ymin=-48, ymax=18)
-                self.sampler.getSamplerFrame().gainSlider.setValue(val)
-                if not self.sampler.getSamplerFrame().gainSlider.slider.IsShownOnScreen():
-                    self.sampler.getSamplerFrame().gainSlider.sendValue(val)
             elif name == 'pitch':
                 val = rescale(val, ymin=-48, ymax=48)
-                self.sampler.getSamplerFrame().transpSlider.setValue(val)
-                if not self.sampler.getSamplerFrame().transpSlider.slider.IsShownOnScreen():
-                    self.sampler.getSamplerFrame().transpSlider.sendValue(val)
+            else:
+                return
+            # The interface shows the value, and passes it back to the
+            # engine when the sampler window is hidden.
+            _emit(("sampler", self.name, name), val, True)
 
     def getWidget(self, name):
-        if name == 'start':
-            widget = self.sampler.getSamplerFrame().loopInSlider
-        elif name == 'dur':
-            widget = self.sampler.getSamplerFrame().loopOutSlider
-        elif name == 'xfade':
-            widget = self.sampler.getSamplerFrame().loopXSlider
-        elif name == 'gain':
-            widget = self.sampler.getSamplerFrame().gainSlider
-        elif name == 'pitch':
-            widget = self.sampler.getSamplerFrame().transpSlider
-        return widget
+        return self.sampler["sliders"][name]
 
     def updateWidgets(self):
         if self.mode != 1:
             if self.start_midi and not self.start_play:
-                val = self.start.get()
-                postToWidget(self.sampler.getSamplerFrame().loopInSlider, 'setValue', val)
+                _emit(("sampler", self.name, 'start'), self.start.get(), False)
             if self.dur_midi and not self.dur_play:
-                val = self.dur.get()
-                postToWidget(self.sampler.getSamplerFrame().loopOutSlider, 'setValue', val)
+                _emit(("sampler", self.name, 'dur'), self.dur.get(), False)
             if self.xfade_midi and not self.xfade_play:
-                val = self.xfade.get()
-                postToWidget(self.sampler.getSamplerFrame().loopXSlider, 'setValue', val)
+                _emit(("sampler", self.name, 'xfade'), self.xfade.get(), False)
             if self.gain_midi and not self.gain_play:
-                val = self.gain_in.get()
-                postToWidget(self.sampler.getSamplerFrame().gainSlider, 'setValue', val)
+                _emit(("sampler", self.name, 'gain'), self.gain_in.get(), False)
             if self.pitch_midi and not self.pitch_play:
-                val = self.pitch_in.get()
-                postToWidget(self.sampler.getSamplerFrame().transpSlider, 'setValue', val)
+                _emit(("sampler", self.name, 'pitch'), self.pitch_in.get(), False)
 
     def newMidiPitch(self):
         # audio thread
         if not self.pitch_midi:
-            uibridge.latest((id(self), "midipitch"), self._applyMidiPitch, self.checkNoteIn.get())
-
-    def _applyMidiPitch(self, pit):
-        transpSlider = self.sampler.getSamplerFrame().transpSlider
-        transpSlider.setValue(pit - 60)
-        if not transpSlider.slider.IsShownOnScreen():
-            transpSlider.sendValue(pit - 60)
+            _emit(("sampler", self.name, 'pitch'), self.checkNoteIn.get() - 60, True)
 
     def setGraph(self, which, func):
         if self.mode != 1:
-            totalTime = CeciliaLib.getVar("totalTime")
+            totalTime = _cfg("totalTime")
             func = [(int(x / totalTime * 8192), y) for x, y in func]
             if which.endswith('start'):
                 self.start_table.replace(func)
@@ -412,7 +408,7 @@ class CeciliaSampler:
         if self.mode != 1:
             return self.table.getDur(False)
         else:
-            return CeciliaLib.getVar("totalTime")
+            return _cfg("totalTime")
 
     def setSound(self, snd):
         if self.mode == 0:
@@ -461,22 +457,19 @@ class CeciliaSlider:
         self.name = dic["name"]
         gliss = dic["gliss"]
         up = dic["up"]
-        totalTime = CeciliaLib.getVar("totalTime")
+        totalTime = _cfg("totalTime")
         self.baseModule = baseModule
+        self.widget = w = _snapshot["sliders"][self.name]
 
         if not up:
-            for line in CeciliaLib.getVar("grapher").plotter.getData():
-                if line.name == self.name:
-                    break
+            line = _line(self.name)
+            self.play = w["play"]
+            self.rec = w["rec"]
+            self.midi = w["midi"]
+            self.openSndCtrl = w["osc"]
 
-            self.widget = line.slider
-            self.play = self.widget.getPlay()
-            self.rec = self.widget.getRec()
-            self.midi = self.widget.getWithMidi()
-            self.openSndCtrl = self.widget.getWithOSC()
-
-            curved = line.getCurved()
-            log = self.widget.getLog()
+            curved = line["curved"]
+            log = w["log"]
             if curved and log:
                 self.table = CosLogTable()
             elif curved:
@@ -487,22 +480,16 @@ class CeciliaSlider:
                 self.table = LinTable()
         else:
             self.play = self.rec = self.midi = self.openSndCtrl = 0
-            for slider in CeciliaLib.getVar("userSliders"):
-                if slider.name == self.name:
-                    self.widget = slider
-                    break
 
-        init = self.widget.getValue()
-        mini = self.widget.getMinValue()
-        maxi = self.widget.getMaxValue()
-        log = self.widget.getLog()
+        init = w["value"]
+        mini = w["min"]
+        maxi = w["max"]
+        log = w["log"]
         self.slider = SigTo(init, time=gliss, init=init)
         if self.rec:
-            self.record = ControlRec(self.slider, filename=self.widget.getPath(), rate=1000, dur=totalTime).play()
+            self.record = ControlRec(self.slider, filename=w["path"], rate=1000, dur=totalTime).play()
         if self.play > 0:
-            data = line.getData()
-            data = [tuple(x) for x in data]
-            self.setGraph(data)
+            self.setGraph(_lineData(line))
             self.reader = TableRead(self.table, freq=1.0 / totalTime).play()
         elif self.midi:
             if log:
@@ -510,10 +497,10 @@ class CeciliaSlider:
                 exp = 2
             else:
                 exp = 1
-            self.ctlin = Midictl(self.widget.getMidiCtl(), mini, maxi, init, self.widget.getMidiChannel())
+            self.ctlin = Midictl(w["midictl"], mini, maxi, init, w["midichnl"])
             self.reader = Scale(SigTo(self.ctlin), inmin=mini, inmax=maxi, outmin=mini, outmax=maxi, exp=exp)
         elif self.openSndCtrl:
-            port, address = self.widget.getOpenSndCtrl()
+            port, address = w["openSndCtrl"]
             self.baseModule._addOpenSndCtrlWidget(port, address, self)
 
     def sig(self):
@@ -526,7 +513,7 @@ class CeciliaSlider:
         self.slider.value = x
 
     def setGraph(self, func):
-        totalTime = CeciliaLib.getVar("totalTime")
+        totalTime = _cfg("totalTime")
         func2 = [(int(x / totalTime * 8192), y) for x, y in func[:]]
 
         oldX = -1
@@ -538,12 +525,12 @@ class CeciliaSlider:
         self.table.replace(func2)
 
     def updateWidget(self):
-        val = self.reader.get()
-        postToWidget(self.widget, 'setValue', val)
+        _emit(("slider", self.name), self.reader.get())
 
     def setValueFromOSC(self, val):
-        val = rescale(val, ymin=self.widget.getMinValue(), ymax=self.widget.getMaxValue(), ylog=self.widget.getLog())
-        postToWidget(self.widget, 'setValue', val)
+        w = self.widget
+        val = rescale(val, ymin=w["min"], ymax=w["max"], ylog=w["log"])
+        _emit(("slider", self.name), val)
 
 class CeciliaRange:
     def __init__(self, dic, baseModule):
@@ -551,25 +538,18 @@ class CeciliaRange:
         self.name = dic["name"]
         gliss = dic["gliss"]
         up = dic["up"]
-        totalTime = CeciliaLib.getVar("totalTime")
+        totalTime = _cfg("totalTime")
         self.baseModule = baseModule
         self.oscTmpVals = [0, 0]
+        self.widget = w = _snapshot["sliders"][self.name]
 
         if not up:
-            self.graph_lines = [None, None]
-            for line in CeciliaLib.getVar("grapher").plotter.getData():
-                if self.name == line.name:
-                    if line.suffix == "min":
-                        self.graph_lines[0] = line
-                    elif line.suffix == "max":
-                        self.graph_lines[1] = line
-
-            self.widget = self.graph_lines[0].slider
-            self.play = self.widget.getPlay()
-            self.rec = self.widget.getRec()
-            self.midi = self.widget.getWithMidi()
-            self.openSndCtrl = self.widget.getWithOSC()
-            curved = [line.getCurved() for line in self.graph_lines]
+            self.graph_lines = [_line(self.name, "min"), _line(self.name, "max")]
+            self.play = w["play"]
+            self.rec = w["rec"]
+            self.midi = w["midi"]
+            self.openSndCtrl = w["osc"]
+            curved = [line["curved"] for line in self.graph_lines]
             if curved[0]:
                 self.table_min = CosTable()
             else:
@@ -580,26 +560,18 @@ class CeciliaRange:
                 self.table_max = LinTable()
         else:
             self.play = self.rec = self.midi = self.openSndCtrl = 0
-            for slider in CeciliaLib.getVar("userSliders"):
-                if slider.name == self.name:
-                    self.widget = slider
-                    break
 
-        init = self.widget.getValue()
-        mini = self.widget.getMinValue()
-        maxi = self.widget.getMaxValue()
-        log = self.widget.getLog()
+        init = w["value"]
+        mini = w["min"]
+        maxi = w["max"]
+        log = w["log"]
         self.slider = SigTo(init, time=gliss, init=init)
         if self.rec:
-            self.record = ControlRec(self.slider, filename=self.widget.getPath(), rate=1000, dur=totalTime).play()
+            self.record = ControlRec(self.slider, filename=w["path"], rate=1000, dur=totalTime).play()
         if self.play > 0:
-            data = self.graph_lines[0].getData()
-            data = [tuple(x) for x in data]
-            self.setGraph(0, data)
+            self.setGraph(0, _lineData(self.graph_lines[0]))
             self.reader_min = TableRead(self.table_min, freq=1.0 / totalTime).play()
-            data = self.graph_lines[1].getData()
-            data = [tuple(x) for x in data]
-            self.setGraph(1, data)
+            self.setGraph(1, _lineData(self.graph_lines[1]))
             self.reader_max = TableRead(self.table_max, freq=1.0 / totalTime).play()
             self.reader = Mix([self.reader_min, self.reader_max], voices=2)
         elif self.midi:
@@ -608,10 +580,10 @@ class CeciliaRange:
                 exp = 2
             else:
                 exp = 1
-            self.ctlin = Midictl(self.widget.getMidiCtl(), mini, maxi, init, self.widget.getMidiChannel())
+            self.ctlin = Midictl(w["midictl"], mini, maxi, init, w["midichnl"])
             self.reader = Scale(SigTo(self.ctlin), inmin=mini, inmax=maxi, outmin=mini, outmax=maxi, exp=exp)
         elif self.openSndCtrl:
-            oscTuples = self.widget.getOpenSndCtrl()
+            oscTuples = w["openSndCtrl"]
             if oscTuples[0] != ():
                 port, address = oscTuples[0][0], oscTuples[0][1]
                 self.baseModule._addOpenSndCtrlWidget(port, address, self, 0)
@@ -629,7 +601,7 @@ class CeciliaRange:
         self.slider.value = x
 
     def setGraph(self, which, func):
-        totalTime = CeciliaLib.getVar("totalTime")
+        totalTime = _cfg("totalTime")
         func = [(int(x / totalTime * 8192), y) for x, y in func]
 
         oldX = -1
@@ -644,96 +616,40 @@ class CeciliaRange:
             self.table_max.replace(func)
 
     def updateWidget(self):
-        val = self.reader.get(all=True)
-        postToWidget(self.widget, 'setValue', val)
+        _emit(("slider", self.name), self.reader.get(all=True))
 
     def setValueFromOSC(self, val, which):
-        val = rescale(val, ymin=self.widget.getMinValue(), ymax=self.widget.getMaxValue(), ylog=self.widget.getLog())
-        postToWidget(self.widget, 'setOneValue', val, which)
+        w = self.widget
+        val = rescale(val, ymin=w["min"], ymax=w["max"], ylog=w["log"])
+        _emit(("slider_one", self.name, which), val)
 
 class CeciliaSplitter:
     def __init__(self, dic):
         self.type = "splitter"
         self.name = dic["name"]
         gliss = dic["gliss"]
-        up = dic["up"]
         self.num_knobs = dic["num_knobs"]
-        totalTime = CeciliaLib.getVar("totalTime")
-
-        if 0: #if not up:
-            self.graph_lines = [None for i in range(self.num_knobs)]
-            for line in CeciliaLib.getVar("grapher").plotter.getData():
-                if self.name in line.name:
-                    which = int(line.suffix[1:])
-                    self.graph_lines[which] = line
-
-            self.widget = self.graph_lines[0].slider
-            self.play = self.widget.getPlay()
-            self.rec = self.widget.getRec()
-
-            self.tables = []
-            for curved in [line.getCurved() for line in self.graph_lines]:
-                if curved:
-                    self.tables.append(CosTable())
-                else:
-                    self.tables.append(LinTable())
-        else:
-            self.play = self.rec = self.midi = 0
-            for slider in CeciliaLib.getVar("userSliders"):
-                if slider.name == self.name:
-                    self.widget = slider
-                    break
-
-        init = self.widget.getValue()
+        # Splitters can't be automated.
+        self.play = self.rec = self.midi = 0
+        self.widget = _snapshot["sliders"][self.name]
+        init = self.widget["value"]
         self.slider = SigTo(init, time=gliss, init=init)
 
-        if self.rec:
-            self.record = ControlRec(self.slider, filename=self.widget.getPath(), rate=1000, dur=totalTime).play()
-        if self.play > 0:
-            self.readers = []
-            for i in range(self.num_knobs):
-                data = self.graph_lines[i].getData()
-                data = [tuple(x) for x in data]
-                self.setGraph(i, data)
-                self.readers.append(TableRead(self.tables[i], freq=1.0 / totalTime).play())
-            self.reader = Mix(self.readers, voices=self.num_knobs)
-
     def sig(self):
-        if self.play == 0:
-            return self.slider
-        else:
-            return self.reader
+        return self.slider
 
     def setValue(self, x):
         self.slider.value = x
-
-    def setGraph(self, which, func):
-        totalTime = CeciliaLib.getVar("totalTime")
-        func = [(int(x / totalTime * 8192), y) for x, y in func]
-
-        oldX = -1
-        for i, f in enumerate(func):
-            if f[0] == oldX:
-                func[i] = (f[0]+1, f[1])
-            oldX = func[i][0]
-
-        self.tables[which].replace(func)
-
-    def updateWidget(self):
-        val = self.reader.get(all=True)
-        postToWidget(self.widget, 'setValue', val)
 
 class CeciliaGraph:
     def __init__(self, dic):
         self.name = dic["name"]
         self.isTable = dic["table"]
         self.size = dic["size"]
-        totalTime = CeciliaLib.getVar("totalTime")
-        for line in CeciliaLib.getVar("grapher").plotter.getData():
-            if line.name == self.name:
-                break
+        totalTime = _cfg("totalTime")
+        line = _line(self.name)
 
-        func = [(int(x / totalTime * (self.size - 1)), y) for x, y in line.getData()]
+        func = [(int(x / totalTime * (self.size - 1)), y) for x, y in line["data"]]
 
         oldX = -1
         for i, f in enumerate(func):
@@ -741,7 +657,7 @@ class CeciliaGraph:
                 func[i] = (f[0]+1, f[1])
             oldX = func[i][0]
 
-        curved = line.getCurved()
+        curved = line["curved"]
         if curved:
             self.table = CosTable(func, size=self.size)
         else:
@@ -756,7 +672,7 @@ class CeciliaGraph:
             return self.reader
 
     def setValue(self, func):
-        totalTime = CeciliaLib.getVar("totalTime")
+        totalTime = _cfg("totalTime")
         func = [(int(x / totalTime * (self.size - 1)), y) for x, y in func]
 
         oldX = -1
@@ -783,18 +699,17 @@ class BaseModule:
         self._OSCOutList = []
 
         ###### Public attributes ######
-        self.sr = CeciliaLib.getVar("sr")
-        self.nchnls = CeciliaLib.getVar("nchnls")
-        self.totalTime = CeciliaLib.getVar("totalTime")
-        self.server = CeciliaLib.getVar("audioServer").server
-        self.filepath = os.path.split(CeciliaLib.getVar("currentCeciliaFile", unicode=True))[0]
+        self.sr = _cfg("sr")
+        self.nchnls = _cfg("nchnls")
+        self.totalTime = _cfg("totalTime")
+        self.server = _engine.server
+        self.filepath = os.path.split(_cfg("currentCeciliaFile"))[0]
         self.number_of_voices = 1
         self.polyphony_spread = [1.0]
         self.polyphony_scaling = 1.0
         ###############################
 
-        interfaceWidgets = CeciliaLib.getVar("interfaceWidgets")
-        for widget in interfaceWidgets:
+        for widget in _engine.interfaceWidgets:
             if widget['type'] in ["cslider", "crange", "csplitter"]:
                 self._addSlider(widget, widget["type"])
             elif widget['type'] == "cgraph":
@@ -813,26 +728,21 @@ class BaseModule:
             elif widget['type'] == "cpoly" and self._polyphony is None:
                 self._polyphony = widget
 
-        userTogglePopups = CeciliaLib.getVar("userTogglePopups")
         polyname = "noPolyphonyWidget"
         if self._polyphony is not None:
             polyname = self._polyphony["name"]
-        for togPop in userTogglePopups:
-            if togPop.name.startswith(polyname):
-                if togPop.name.endswith("num"):
-                    self.number_of_voices = togPop.getValue() + 1
+        for togPop in _snapshot["togglePopups"]:
+            name = togPop["name"]
+            if name.startswith(polyname):
+                if name.endswith("num"):
+                    self.number_of_voices = togPop["value"] + 1
                 else:
-                    self._definePolyTranspo(togPop.getLabel())
-            if togPop.type == "popup":
-                name = togPop.name
-                setattr(self, name + "_index", togPop.getValue())
-                setattr(self, name + "_value", togPop.getLabel())
-            elif togPop.type == "toggle":
-                name = togPop.name
-                setattr(self, name + "_value", togPop.getValue())
-            elif togPop.type == "gen":
-                name = togPop.name
-                setattr(self, name + "_value", togPop.getValue())
+                    self._definePolyTranspo(togPop["label"])
+            if togPop["type"] == "popup":
+                setattr(self, name + "_index", togPop["value"])
+                setattr(self, name + "_value", togPop["label"])
+            elif togPop["type"] in ("toggle", "gen"):
+                setattr(self, name + "_value", togPop["value"])
 
         self._metro = Metro(.06).play(dur=self.totalTime)
         self._updater = TrigFunc(self._metro, self._updateWidgets).play(dur=self.totalTime)
@@ -904,7 +814,7 @@ class BaseModule:
         Sets the Server's global seed used by objects from the random family.
 
         """
-        CeciliaLib.getVar("audioServer").server.globalseed = x
+        _engine.server.globalseed = x
     ############################
 
     ###### Private methods ######
@@ -944,32 +854,26 @@ class BaseModule:
                         slider, side = slider[0], slider[1]
                         if slider.type == "sampler": # sampler slider
                             widget = slider.getWidget(side)
-                            path = widget.openSndCtrl[1]
-                            val = rescale(widget.getValue(), xmin=widget.getMinValue(), xmax=widget.getMaxValue(), xlog=widget.getLog())
-                            self.oscReceivers[key].setValue(path, val)
-                            if widget.OSCOut is not None:
-                                tmpout = OscDataSend("f", widget.OSCOut[1], widget.OSCOut[2], widget.OSCOut[0])
-                                tmpout.send([val])
-                                self._OSCOutList.append(tmpout)
+                            openSndCtrl, OSCOut = widget["openSndCtrl"], widget["OSCOut"]
+                            value = widget["value"]
                         else: # range slider
                             widget = slider.widget
-                            path = widget.openSndCtrl[side][1]
-                            val = rescale(widget.getValue()[side], xmin=widget.getMinValue(), xmax=widget.getMaxValue(), xlog=widget.getLog())
-                            self.oscReceivers[key].setValue(path, val)
-                            if widget.OSCOut is not None:
-                                if widget.OSCOut[side] != ():
-                                    tmpout = OscDataSend("f", widget.OSCOut[side][1], widget.OSCOut[side][2], widget.OSCOut[side][0])
-                                    tmpout.send([val])
-                                    self._OSCOutList.append(tmpout)
-                    else: # slider TODO: could be merged with sampler slider code.
+                            openSndCtrl = widget["openSndCtrl"][side]
+                            OSCOut = widget["OSCOut"][side] if widget["OSCOut"] is not None else None
+                            if OSCOut == ():
+                                OSCOut = None
+                            value = widget["value"][side]
+                    else: # slider
                         widget = slider.widget
-                        path = widget.openSndCtrl[1]
-                        val = rescale(widget.getValue(), xmin=widget.getMinValue(), xmax=widget.getMaxValue(), xlog=widget.getLog())
-                        self.oscReceivers[key].setValue(path, val)
-                        if widget.OSCOut is not None:
-                            tmpout = OscDataSend("f", widget.OSCOut[1], widget.OSCOut[2], widget.OSCOut[0])
-                            tmpout.send([val])
-                            self._OSCOutList.append(tmpout)
+                        openSndCtrl, OSCOut = widget["openSndCtrl"], widget["OSCOut"]
+                        value = widget["value"]
+                    path = openSndCtrl[1]
+                    val = rescale(value, xmin=widget["min"], xmax=widget["max"], xlog=widget["log"])
+                    self.oscReceivers[key].setValue(path, val)
+                    if OSCOut is not None:
+                        tmpout = OscDataSend("f", OSCOut[1], OSCOut[2], OSCOut[0])
+                        tmpout.send([val])
+                        self._OSCOutList.append(tmpout)
 
     def _addOpenSndCtrlWidget(self, port, address, slider, side=0, name=""):
         if port in self._openSndCtrlDict:
@@ -1013,29 +917,26 @@ class BaseModule:
                         slider[0].setValueFromOSC(values[i], which)
                     else:
                         slider.setValueFromOSC(values[i])
-        CeciliaLib.getVar("audioServer").updatePluginWidgets()
+        _engine.updatePluginWidgets()
 
     def _setWidgetValues(self):
         # graph lines
-        for line in CeciliaLib.getVar("grapher").plotter.getData():
-            name = line.getName()
+        for line in _snapshot["lines"]:
+            name = line["name"]
             if name in self._graphs.keys():
-                data = line.getData()
-                self._graphs[name].setValue(data)
+                self._graphs[name].setValue(line["data"])
         # sliders
-        for slider in CeciliaLib.getVar("userSliders"):
-            name = slider.getName()
-            self._sliders[name].setValue(slider.getValue())
+        for name in _snapshot["userSliders"]:
+            self._sliders[name].setValue(_snapshot["sliders"][name]["value"])
         # toggles and popups
-        for togPop in CeciliaLib.getVar("userTogglePopups"):
-            name = togPop.getName()
+        for togPop in _snapshot["togglePopups"]:
+            name = togPop["name"]
             if name in self._toggles:
-                getattr(self, name)(togPop.getValue())
+                getattr(self, name)(togPop["value"])
             elif name in self._popups:
-                index, label = togPop.getFullValue()
-                getattr(self, name)(index, label)
+                getattr(self, name)(togPop["value"], togPop["label"])
             elif name in self._gens:
-                getattr(self, name)(togPop.getValue())
+                getattr(self, name)(togPop["value"])
 
     def _addSlider(self, dic, typ):
         if typ == "cslider":
@@ -1058,123 +959,45 @@ class BaseModule:
 
 class CeciliaPlugin:
     def __init__(self, input, params=None, knobs=None):
+        """knobs: snapshot dicts of the plugin's three knobs (see snapshot.py)."""
         self.input = Sig(input)
         gliss = 0.05
-        totalTime = CeciliaLib.getVar("totalTime")
+        totalTime = _cfg("totalTime")
         if params is None:
             self._p1 = SigTo(0, time=0.025)
             self._p2 = SigTo(0, time=0.025)
             self._p3 = SigTo(0, time=0.025)
         else:
-            # TODO: merge these three chunks in a single loop.
-            self.widget_p1 = knobs[0]
-            name = self.widget_p1.getName()
-            for line in CeciliaLib.getVar("grapher").plotter.getData():
-                if line.name == name:
-                    break
-            self.play_p1 = self.widget_p1.getPlay()
-            self.rec_p1 = self.widget_p1.getRec()
-            self.midi_p1 = self.widget_p1.getWithMidi()
-            curved = line.getCurved()
-            if curved:
-                self.table_p1 = CosTable()
-            else:
-                self.table_p1 = LinTable()
+            for i in range(3):
+                n = i + 1
+                knob = knobs[i]
+                setattr(self, "widget_p%d" % n, knob)
+                line = _line(knob["name"])
+                play, rec, midi = knob["play"], knob["rec"], knob["midi"]
+                setattr(self, "play_p%d" % n, play)
+                setattr(self, "rec_p%d" % n, rec)
+                setattr(self, "midi_p%d" % n, midi)
+                table = CosTable() if line["curved"] else LinTable()
+                setattr(self, "table_p%d" % n, table)
 
-
-            init = self.widget_p1.getValue()
-            mini = self.widget_p1.getMinValue()
-            maxi = self.widget_p1.getMaxValue()
-            log = self.widget_p1.getLog()
-            self._p1 = SigTo(params[0], time=gliss, init=params[0])
-            if self.rec_p1:
-                self.record_p1 = ControlRec(self._p1, filename=self.widget_p1.getPath(),
-                                            rate=1000, dur=totalTime).play()
-            if self.play_p1 > 0:
-                data = line.getData()
-                data = [tuple(x) for x in data]
-                self.setGraph(0, data)
-                self.reader_p1 = TableRead(self.table_p1, freq=1.0 / totalTime).play()
-            elif self.midi_p1:
-                if log:
-                    init = math.sqrt((init - mini) / (maxi - mini)) * (maxi - mini) + mini
-                    exp = 2
-                else:
-                    exp = 1
-                self.ctlin_p1 = Midictl(self.widget_p1.getMidiCtl(), mini, maxi, init, self.widget_p1.getMidiChannel())
-                self.reader_p1 = Scale(self.ctlin_p1, inmin=mini, inmax=maxi, outmin=mini, outmax=maxi, exp=exp)
-
-            self.widget_p2 = knobs[1]
-            name = self.widget_p2.getName()
-            for line in CeciliaLib.getVar("grapher").plotter.getData():
-                if line.name == name:
-                    break
-            self.play_p2 = self.widget_p2.getPlay()
-            self.rec_p2 = self.widget_p2.getRec()
-            self.midi_p2 = self.widget_p2.getWithMidi()
-            curved = line.getCurved()
-            if curved:
-                self.table_p2 = CosTable()
-            else:
-                self.table_p2 = LinTable()
-
-            init = self.widget_p2.getValue()
-            mini = self.widget_p2.getMinValue()
-            maxi = self.widget_p2.getMaxValue()
-            log = self.widget_p2.getLog()
-            self._p2 = SigTo(params[1], time=gliss, init=params[1])
-            if self.rec_p2:
-                self.record_p2 = ControlRec(self._p2, filename=self.widget_p2.getPath(),
-                                            rate=1000, dur=totalTime).play()
-            if self.play_p2 > 0:
-                data = line.getData()
-                data = [tuple(x) for x in data]
-                self.setGraph(1, data)
-                self.reader_p2 = TableRead(self.table_p2, freq=1.0 / totalTime).play()
-            elif self.midi_p2:
-                if log:
-                    init = math.sqrt((init - mini) / (maxi - mini)) * (maxi - mini) + mini
-                    exp = 2
-                else:
-                    exp = 1
-                self.ctlin_p2 = Midictl(self.widget_p2.getMidiCtl(), mini, maxi, init, self.widget_p2.getMidiChannel())
-                self.reader_p2 = Scale(self.ctlin_p2, inmin=mini, inmax=maxi, outmin=mini, outmax=maxi, exp=exp)
-
-            self.widget_p3 = knobs[2]
-            name = self.widget_p3.getName()
-            for line in CeciliaLib.getVar("grapher").plotter.getData():
-                if line.name == name:
-                    break
-            self.play_p3 = self.widget_p3.getPlay()
-            self.rec_p3 = self.widget_p3.getRec()
-            self.midi_p3 = self.widget_p3.getWithMidi()
-            curved = line.getCurved()
-            if curved:
-                self.table_p3 = CosTable()
-            else:
-                self.table_p3 = LinTable()
-
-            init = self.widget_p3.getValue()
-            mini = self.widget_p3.getMinValue()
-            maxi = self.widget_p3.getMaxValue()
-            log = self.widget_p3.getLog()
-            self._p3 = SigTo(params[2], time=gliss, init=params[2])
-            if self.rec_p3:
-                self.record_p3 = ControlRec(self._p3, filename=self.widget_p3.getPath(),
-                                        rate=1000, dur=totalTime).play()
-            if self.play_p3 > 0:
-                data = line.getData()
-                data = [tuple(x) for x in data]
-                self.setGraph(2, data)
-                self.reader_p3 = TableRead(self.table_p3, freq=1.0 / totalTime).play()
-            elif self.midi_p3:
-                if log:
-                    init = math.sqrt((init - mini) / (maxi - mini)) * (maxi - mini) + mini
-                    exp = 2
-                else:
-                    exp = 1
-                self.ctlin_p3 = Midictl(self.widget_p3.getMidiCtl(), mini, maxi, init, self.widget_p3.getMidiChannel())
-                self.reader_p3 = Scale(self.ctlin_p3, inmin=mini, inmax=maxi, outmin=mini, outmax=maxi, exp=exp)
+                init, mini, maxi, log = knob["value"], knob["min"], knob["max"], knob["log"]
+                param = SigTo(params[i], time=gliss, init=params[i])
+                setattr(self, "_p%d" % n, param)
+                if rec:
+                    setattr(self, "record_p%d" % n,
+                            ControlRec(param, filename=knob["path"], rate=1000, dur=totalTime).play())
+                if play > 0:
+                    self.setGraph(i, _lineData(line))
+                    setattr(self, "reader_p%d" % n, TableRead(table, freq=1.0 / totalTime).play())
+                elif midi:
+                    if log:
+                        init = math.sqrt((init - mini) / (maxi - mini)) * (maxi - mini) + mini
+                        exp = 2
+                    else:
+                        exp = 1
+                    ctlin = Midictl(knob["midictl"], mini, maxi, init, knob["midichnl"])
+                    setattr(self, "ctlin_p%d" % n, ctlin)
+                    setattr(self, "reader_p%d" % n, Scale(ctlin, inmin=mini, inmax=maxi, outmin=mini, outmax=maxi, exp=exp))
 
             self.preset = params[3]
 
@@ -1207,7 +1030,7 @@ class CeciliaPlugin:
         self.input.value = input
 
     def setGraph(self, which, func):
-        totalTime = CeciliaLib.getVar("totalTime")
+        totalTime = _cfg("totalTime")
         func = [(int(x / totalTime * 8192), y) for x, y in func]
         if which == 0:
             self.table_p1.replace(func)
@@ -1242,16 +1065,14 @@ class CeciliaPlugin:
         if self.rec_p3:
             self.record_p3.write()
 
-    def updateWidget(self):
+    def updateWidget(self, order):
+        """order: the plugin's current slot, which is also its slot in the interface."""
         if self.play_p1 or self.midi_p1:
-            val = self.reader_p1.get()
-            postToWidget(self.widget_p1, 'setValue', val)
+            _emit(("plugin_knob", order, 0), self.name, self.reader_p1.get())
         if self.play_p2 or self.midi_p2:
-            val = self.reader_p2.get()
-            postToWidget(self.widget_p2, 'setValue', val)
+            _emit(("plugin_knob", order, 1), self.name, self.reader_p2.get())
         if self.play_p3 or self.midi_p3:
-            val = self.reader_p3.get()
-            postToWidget(self.widget_p3, 'setValue', val)
+            _emit(("plugin_knob", order, 2), self.name, self.reader_p3.get())
 
 class CeciliaNonePlugin(CeciliaPlugin):
     def __init__(self, input):
@@ -1526,41 +1347,103 @@ class CeciliaChaosModPlugin(CeciliaPlugin):
 
 class _MeterForwarder:
     """pyo's amplitude callback object. pyo calls setRms() from the audio
-    thread; the meter is redrawn on the main thread with the latest levels and
-    the loudest level seen since the previous redraw (so peaks aren't lost)."""
-    def __init__(self, meter):
-        self.meter = meter
+    thread. Levels are sent to the interface at most about 30 times per
+    second, with the loudest level seen since the previous send (so short
+    peaks aren't lost)."""
+    INTERVAL = 0.03
+
+    def __init__(self):
         self.peak = 0.0
+        self.last = 0.0
 
     def setRms(self, *args):
         if args and args[0] >= 0:
             loudest = max(args)
             if loudest > self.peak:
                 self.peak = loudest
-        uibridge.latest((id(self.meter), "rms"), self._apply, args)
+        now = time.monotonic()
+        if now - self.last >= self.INTERVAL:
+            self.last = now
+            peak, self.peak = self.peak, 0.0
+            _emit(("meter",), args, peak)
 
-    def _apply(self, args):
-        peak, self.peak = self.peak, 0.0
-        self.meter.setRms(*args, peak=peak)
+
+def formatModuleError(filepath, msg):
+    """Error message for a module that failed to compile or run, from the
+    exception being handled."""
+    error = traceback.format_exc()
+    if "exec(f.read(), globals())" in error:
+        pos = error.find("exec(f.read(), globals())")
+        error = error[pos:].replace("exec(f.read(), globals())", "")
+
+    linenum = -1
+    if "line " in error:
+        try:
+            pos1 = error.rfind("line ") + 5
+            pos2 = pos1
+            while error[pos2] in "0123456789":
+                pos2 += 1
+            linenum = int(error[pos1:pos2].strip())
+        except:
+            pass
+
+    codeline = ""
+    if linenum != -1:
+        try:
+            codeline = "Please review this part of the code and reload the module:\n\n#-----\n"
+            with open(filepath, "r") as f:
+                _text = f.readlines()
+                if linenum > 0:
+                    codeline = codeline + _text[linenum-1] + _text[linenum] + "#-----\n"
+                else:
+                    codeline = codeline + _text[linenum] + "#-----\n"
+        except:
+            pass
+
+    tracelines = "Traceback:\n\n" + error.replace("<string>", filepath) + "\n\n"
+    return msg + tracelines + codeline
 
 
 class AudioServer():
-    def __init__(self):
+    """The engine: owns the pyo Server, the module being played and the
+    plugin chain.
+
+    cfg: engine preferences (see snapshot.enginePrefs()), updated with
+         configure() and by each snapshot given to play().
+    sink: where engine events go (see the top of this file).
+
+    The public methods listed in COMMANDS are the whole interface of the
+    engine; nothing else is called from the GUI.
+    """
+    COMMANDS = ("configure", "updateDebug", "openModule", "play", "stop", "writeAutomation",
+                "isRunning", "isBooted", "setAmp", "setSlider", "callModule", "samplerCall",
+                "setGraph", "setSliderGraph", "setSamplerGraph", "setPluginGraph",
+                "setPlugin", "movePlugin", "setPluginValue", "setPluginPreset",
+                "midiLearn", "spectrumCall", "shutdown")
+
+    def __init__(self, sink, cfg):
+        global _engine
+        _engine = self
+        self.sink = sink
+        self.cfg = dict(cfg)
         self.amp = 1.0
+        self.module = None          # the running BaseModule instance
+        self.moduleClass = None     # Module class of the opened .c5 file
+        self.interfaceWidgets = []  # Interface of the opened .c5 file
         sr, bufsize, nchnls, duplex, host, outdev, indev, firstin, firstout = self.getPrefs()
-        jackname = CeciliaLib.getVar("jack").get("client", "cecilia5")
-        if CeciliaLib.getVar("DEBUG"):
+        if self.cfg["DEBUG"]:
             print("AUDIO CONFIG:")
             template = "sr: %s, buffer size: %s, num of channels: %s, duplex: %s, host: %s, output device: %s, input device: %s"
             print(template % (sr, bufsize, nchnls, duplex, host, outdev, indev))
             print("first physical input: %s, first physical output: %s\n" % (firstin, firstout))
         self.server = Server(sr=sr, buffersize=bufsize, nchnls=nchnls, duplex=duplex,
-                             audio=host, jackname=jackname)
-        if CeciliaLib.getVar("DEBUG"):
+                             audio=host, jackname=self.cfg["jackClient"])
+        if self.cfg["DEBUG"]:
             self.server.verbosity = 15
         if host == 'jack':
             self.server.setJackAuto(True, True)
-        self.setTimeCallable()
+        self.server._server.setTimeCallable(self)
+        self.server._server.setAmpCallable(_MeterForwarder())
         self.timeOpened = True
         self.endDialogPosted = self.endStopPosted = False
         self.recording = False
@@ -1574,68 +1457,64 @@ class AudioServer():
                            "Flange": CeciliaFlangePlugin, "Harmonizer": CeciliaHarmonizerPlugin, "Resonators": CeciliaResonatorsPlugin,
                            "DeadReson": CeciliaDeadResonPlugin, 'ChaosMod': CeciliaChaosModPlugin}
 
-    def updateDebug(self):
-        if CeciliaLib.getVar("DEBUG"):
+    ###### Commands ######
+    def configure(self, cfg):
+        self.cfg.update(cfg)
+
+    def updateDebug(self, debug):
+        self.cfg["DEBUG"] = debug
+        if debug:
             self.server.verbosity = 15
         else:
             self.server.verbosity = 7
 
-    def getPrefs(self):
-        sr = CeciliaLib.getVar("sr")
-        bufsize = int(CeciliaLib.getVar("bufferSize"))
-        nchnls = CeciliaLib.getVar("nchnls")
-        duplex = CeciliaLib.getVar("enableAudioInput")
-        host = CeciliaLib.getVar("audioHostAPI")
-        outdev = CeciliaLib.getVar("audioOutput")
-        indev = CeciliaLib.getVar("audioInput")
-        firstin = CeciliaLib.getVar("defaultFirstInput")
-        firstout = CeciliaLib.getVar("defaultFirstOutput")
-        return sr, bufsize, nchnls, duplex, host, outdev, indev, firstin, firstout
+    def openModule(self, filepath):
+        """Compiles a .c5 file. Returns (True, interface widgets) or
+        (False, error message)."""
+        global Module, Interface
 
-    def dump(self, l):
-        pass
+        try:
+            del Module, Interface
+        except:
+            pass
 
-    def start(self, timer=True, rec=False):
-        if CeciliaLib.getVar("DEBUG"):
-            print("Audio server start: begin")
-        self.timeOpened = True
-        self.endDialogPosted = self.endStopPosted = False
-        fade = CeciliaLib.getVar("globalFade")
-        self.globalamp = Fader(fadein=fade, fadeout=fade, dur=CeciliaLib.getVar("totalTime")).play()
-        self.out.mul = self.globalamp
-        if CeciliaLib.getVar("automaticMidiBinding") and CeciliaLib.getVar("useMidi"):
-            if CeciliaLib.getVar("DEBUG"):
-                print("Audio server start: use midi")
-                print("midi input device: %d" % CeciliaLib.getVar("midiDeviceIn"))
-            self.gainSliderWidget = CeciliaLib.getControlPanel().gainSlider
-            self.checkCtl7 = Midictl(ctlnumber=7, minscale=-48, maxscale=18, init=0)
-            self.onNewCtl7Value = Change(self.checkCtl7)
-            self.ctl7TrigFunc = TrigFunc(self.onNewCtl7Value, self.newCtl7Value)
-        if rec:
-            self.recording = True
-            fileformat = AUDIO_FILE_FORMATS[CeciliaLib.getVar("audioFileType")]
-            sampletype = CeciliaLib.getExportSampleType()
-            self.recamp = SigTo(self.amp, time=0.05, init=self.amp)
-            self.recorder = Record(self.pluginObjs[-1].out * self.recamp,
-                                   CeciliaLib.getVar("outputFile"), CeciliaLib.getVar("nchnls"),
-                                   fileformat=fileformat, sampletype=sampletype, buffering=8)
-        if CeciliaLib.getVar("showSpectrum"):
-            self.withSpectrum = True
-            self.specamp = SigTo(self.amp, time=0.05, init=self.amp, mul=self.pluginObjs[-1].out)
-            self.spectrum = Spectrum(self.specamp, function=self.dump)
-        if CeciliaLib.getVar("startOffset") > 0.0:
-            self.server.startoffset = CeciliaLib.getVar("startOffset")
-        if timer:
-            self.withTimer = True
-            self.server.start()
-        else:
-            self.server.start()
-            CeciliaLib.resetControls()
-        if CeciliaLib.getVar("DEBUG"):
-            print("Audio server start: end\n")
+        if not serverBooted():
+            self.boot()
+
+        self.cleanup_module()
+        self.moduleClass = None
+        self.interfaceWidgets = []
+
+        try:
+            with open(filepath, "r") as f:
+                exec(f.read(), globals())
+        except Exception:
+            msg = "Cecilia can't compile the chosen module, Current module (or a random one if this failed too) will be reloaded.\n\n"
+            return False, formatModuleError(filepath, msg)
+
+        self.moduleClass = Module
+        self.interfaceWidgets = deepCopy(Interface)
+        return True, deepCopy(Interface)
+
+    def play(self, snapshot, timer=True, rec=False):
+        """Boots the server with the snapshot's preferences, builds the module
+        and starts it. Returns (True, None) or (False, error message)."""
+        self.configure(snapshot["prefs"])
+        self.shutdown()
+        self.reinit()
+        self.boot()
+        if self.moduleClass is None:
+            return False, None
+        ok, error = self.loadModule(snapshot)
+        if not ok:
+            return False, error
+        self.start(timer=timer, rec=rec)
+        return True, None
 
     def stop(self):
-        if CeciliaLib.getVar("DEBUG"):
+        if not self.isRunning():
+            return
+        if self.cfg["DEBUG"]:
             print("Audio server stop: begin")
         if self.withTimer:
             self.withTimer = False
@@ -1648,98 +1527,25 @@ class AudioServer():
             self.spectrum.poll(False)
             self.spectrum.stop()
         self.timeOpened = False
-        uibridge.clear_latest()
-        if CeciliaLib.getVar("grapher") is not None:
-            CeciliaLib.getVar("grapher").cursorPanel.setTime(CeciliaLib.getVar("startOffset"))
+        self.sink.clear()
+        _emit(("clock",), "cursor")  # back to the start offset
         time.sleep(.15)
-        if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._deleteOscReceivers()
-        if CeciliaLib.getVar("DEBUG"):
+        if self.module is not None:
+            self.module._deleteOscReceivers()
+        if self.cfg["DEBUG"]:
             print("Audio server stop: end\n")
 
-    def shutdown(self):
-        self.server.shutdown()
+    def writeAutomation(self):
+        """Writes the automation recorded during the last run to disk."""
+        if self.module is not None:
+            self.checkForAutomation()
+            self.module._checkForAutomation()
 
-    def boot(self):
-        sr, bufsize, nchnls, duplex, host, outdev, indev, firstin, firstout = self.getPrefs()
-        if CeciliaLib.getVar("DEBUG"):
-            print("AUDIO CONFIG:")
-            template = "sr: %s, buffer size: %s, num of channels: %s, duplex: %s, host: %s, output device: %s, input device: %s"
-            print(template % (sr, bufsize, nchnls, duplex, host, outdev, indev))
-            print("first physical input: %s, first physical output: %s\n" % (firstin, firstout))
-            print("MIDI CONFIG: \ninput device: %d\n" % CeciliaLib.getVar("midiDeviceIn"))
-        self.server.setSamplingRate(sr)
-        self.server.setBufferSize(bufsize)
-        self.server.setNchnls(nchnls)
-        self.server.setDuplex(duplex)
-        self.server.setOutputDevice(outdev)
-        self.server.setInputOffset(firstin)
-        self.server.setOutputOffset(firstout)
-        if CeciliaLib.getVar("enableAudioInput"):
-            self.server.setInputDevice(indev)
-        if CeciliaLib.getVar("useMidi"):
-            self.server.setMidiInputDevice(CeciliaLib.getVar("midiDeviceIn"))
-        self.server.boot()
+    def isRunning(self):
+        return self.server.getIsStarted()
 
-    def reinit(self):
-        jackname = CeciliaLib.getVar("jack").get("client", "cecilia5")
-        if CeciliaLib.getVar("toDac"):
-            sr, bufsize, nchnls, duplex, host, outdev, indev, firstin, firstout = self.getPrefs()
-            self.server.reinit(audio=host, jackname=jackname)
-        else:
-            self.server.reinit(audio="offline_nb", jackname=jackname)
-            dur = CeciliaLib.getVar("totalTime")
-            filename = CeciliaLib.getVar("outputFile")
-            fileformat = AUDIO_FILE_FORMATS[CeciliaLib.getVar("audioFileType")]
-            sampletype = CeciliaLib.getExportSampleType()
-            self.server.recordOptions(dur=dur, filename=filename, fileformat=fileformat, sampletype=sampletype)
-
-    def setAmpCallable(self, meter):
-        self.server._server.setAmpCallable(_MeterForwarder(meter))
-
-    def setTimeCallable(self):
-        self.server._server.setTimeCallable(self)
-
-    def setTime(self, *args):
-        # Called from the audio thread (or pyo's offline render thread) every
-        # few milliseconds of audio. Never touch widgets here: post to uibridge.
-        if len(args) >= 4 and self.timeOpened:
-            time = args[1] * 60 + args[2] + args[3] * 0.001
-            if CeciliaLib.getVar("toDac"):
-                # Offline renders run much faster than realtime and nobody
-                # watches the clock, so it is only updated when playing.
-                uibridge.latest("clock", self._showTime, time, args[1], args[2], args[3] // 10)
-            totalTime = CeciliaLib.getVar("totalTime")
-            if time >= (totalTime - 0.5) and not self.endDialogPosted:
-                self.endDialogPosted = True
-                uibridge.event(self._closeBounceDialog)
-            if time >= totalTime and not self.endStopPosted:
-                self.endStopPosted = True
-                uibridge.event(CeciliaLib.stopCeciliaSound)
-        else:
-            uibridge.latest("clock", self._resetTime)
-
-    def _showTime(self, time, m, s, c):
-        CeciliaLib.getVar("grapher").cursorPanel.setTime(time)
-        CeciliaLib.getVar("interface").controlPanel.setTime(time, m, s, c)
-
-    def _resetTime(self):
-        CeciliaLib.getVar("grapher").cursorPanel.setTime(CeciliaLib.getVar("startOffset"))
-        CeciliaLib.getVar("interface").controlPanel.setTime(0, 0, 0, 0)
-
-    def _closeBounceDialog(self):
-        if CeciliaLib.getControlPanel() is not None:
-            CeciliaLib.getControlPanel().closeBounceToDiskDialog()
-
-    def recstart(self):
-        self.server.recstart()
-
-    def recstop(self):
-        self.server.recstop()
-
-    def newCtl7Value(self):
-        # audio thread
-        postToWidget(self.gainSliderWidget, 'SetValue', self.checkCtl7.get())
+    def isBooted(self):
+        return self.server.getIsBooted()
 
     def setAmp(self, x):
         self.amp = math.pow(10.0, x * 0.05)
@@ -1753,101 +1559,216 @@ class AudioServer():
         except:
             pass
 
-    def setInOutDevice(self, device):
-        self.server.setInOutDevice(device)
+    def setSlider(self, name, value):
+        if self.module is not None and name in self.module._sliders:
+            self.module._sliders[name].setValue(value)
 
-    def setMidiInputDevice(self, device):
-        self.server.setMidiInputDevice(device)
+    def callModule(self, name, *args):
+        """Calls a method of the module: toggles, popups, buttons, gens and
+        the `<name>_up` callbacks of sliders."""
+        if self.module is not None:
+            getattr(self.module, name)(*args)
 
-    def setSamplingRate(self, sr):
-        self.server.setSamplingRate(sr)
+    def samplerCall(self, name, method, *args):
+        """Calls a method of a module's sampler (setStart, setDur, setXfade,
+        setGain, setPitch, setLoopMode, setXfadeShape, setSound)."""
+        if self.module is not None and name in self.module._samplers:
+            getattr(self.module._samplers[name], method)(*args)
 
-    def recordOptions(self, dur, filename, fileformat, sampletype):
-        self.server.recordOptions(dur, filename, fileformat, sampletype)
+    def setGraph(self, name, data):
+        if self.module is not None and name in self.module._graphs:
+            self.module._graphs[name].setValue(data)
 
-    def isAudioServerRunning(self):
-        return self.server.getIsStarted()
-
-    def isAudioServerBooted(self):
-        return self.server.getIsBooted()
-
-    def compileRuntimeError(self, filepath, title, msg):
-        error = traceback.format_exc()
-        #print("============== Error:\n", error, "=====================\n")
-        if "exec(f.read(), globals())" in error:
-            pos = error.find("exec(f.read(), globals())")
-            error = error[pos:].replace("exec(f.read(), globals())", "")
-
-        linenum = -1
-        if "line " in error:
-            try:
-                pos1 = error.rfind("line ") + 5
-                pos2 = pos1
-                while error[pos2] in "0123456789":
-                    pos2 += 1
-                linenum = int(error[pos1:pos2].strip())
-            except:
-                pass
-
-        codeline = ""
-        if linenum != -1:
-            try:
-                codeline = "Please review this part of the code and reload the module:\n\n#-----\n"
-                with open(filepath, "r") as f:
-                    _text = f.readlines()
-                    if linenum > 0:
-                        codeline = codeline + _text[linenum-1] + _text[linenum] + "#-----\n"
-                    else:
-                        codeline = codeline + _text[linenum] + "#-----\n"
-            except:
-                pass
-
-        tracelines = error
-        tracelines = "Traceback:\n\n" + tracelines.replace("<string>", filepath) + "\n\n"
-
-        msg = msg + tracelines + codeline
-        CeciliaLib.showErrorDialog(title, msg)
-
-    def openCecFile(self, filepath):
-        global Module, Interface
-
-        try:
-            del Module, Interface
-        except:
-            pass
-
-        if not serverBooted():
-            self.boot()
-
-        self.cleanup_module()
-
-        CeciliaLib.setVar("currentModule", None)
-        CeciliaLib.setVar("currentModuleRef", None)
-        CeciliaLib.setVar("interfaceWidgets", [])
-        CeciliaLib.setVar("startOffset", 0.0)
-
-        CeciliaLib.checkForPresetsInCeciliaFile(filepath)
-
-        try:
-            with open(filepath, "r") as f:
-                exec(f.read(), globals())
-        except Exception as e:
-            # If it fails, show the error and reload the current module.
-            msg = "Cecilia can't compile the chosen module, Current module (or a random one if this failed too) will be reloaded.\n\n"
-            self.compileRuntimeError(filepath, "Syntax Error!", msg)
-            if os.path.isfile(MODULE_COMPILE_BACKUP_PATH):
-                CeciliaLib.openCeciliaFile(None, MODULE_COMPILE_BACKUP_PATH,
-                                           CeciliaLib.getVar("builtinModule"))
+    def setSliderGraph(self, name, data, which=None):
+        if self.module is not None and name in self.module._sliders:
+            if which is None:
+                self.module._sliders[name].setGraph(data)
             else:
-                CeciliaLib.getVar("mainFrame").onOpenRandom(None)
-            return False
+                self.module._sliders[name].setGraph(which, data)
 
-        CeciliaLib.setVar("currentModuleRef", copy.deepcopy(Module))
-        CeciliaLib.setVar("interfaceWidgets", CeciliaLib.deepCopy(Interface))
+    def setSamplerGraph(self, name, line, data):
+        self.samplerCall(name, "setGraph", line, data)
 
-        CeciliaLib.getVar("mainFrame").onUpdateInterface(None)
+    def setPluginGraph(self, order, name, which, func):
+        if self._pluginIs(order, name):
+            self.pluginObjs[order].setGraph(which, func)
 
-        return True
+    def setPlugin(self, order, plugin):
+        """Replaces the plugin in slot `order` while playing. plugin is a
+        snapshot dict (see snapshot.py) or None."""
+        if not self.isRunning():
+            return
+        tmp = self.pluginObjs[order]
+        if order == 0:
+            tmp_out = self.out
+        else:
+            tmp_out = self.pluginObjs[order - 1].out
+        self.pluginObjs[order] = self._makePlugin(tmp_out, plugin)
+        if order < (NUM_OF_PLUGINS - 1):
+            self.pluginObjs[order + 1].setInput(self.pluginObjs[order].out)
+        else:
+            self.pluginObjs[order].out.out()
+        del tmp
+
+    def movePlugin(self, vpos, dir):
+        if not self.isRunning():
+            return
+        i1 = vpos
+        i2 = vpos + dir
+        tmp = self.pluginObjs[i2]
+        self.pluginObjs[i2] = self.pluginObjs[i1]
+        self.pluginObjs[i1] = tmp
+        for i in range(NUM_OF_PLUGINS):
+            if i == 0:
+                tmp_out = self.out
+            else:
+                tmp_out = self.pluginObjs[i - 1].out
+            self.pluginObjs[i].setInput(tmp_out)
+            self.pluginObjs[i].out.play()
+        self.pluginObjs[NUM_OF_PLUGINS - 1].out.out()
+
+    def setPluginValue(self, order, name, which, x):
+        if self._pluginIs(order, name):
+            self.pluginObjs[order].setValue(which, x)
+
+    def setPluginPreset(self, order, name, which, label):
+        if self._pluginIs(order, name):
+            self.pluginObjs[order].setPreset(which, label)
+
+    def midiLearn(self):
+        """Restarts the server listening to MIDI controllers. Each controller
+        move is sent as a ("midi_ctl", number, channel) event; the interface
+        calls stop() when it has learned what it wanted."""
+        self.shutdown()
+        self.boot()
+        self.scan = CtlScan2(self._onMidiCtl, False)
+        self.server.start()
+
+    def spectrumCall(self, method, *args):
+        """Forwards a setting of the spectrum window to the analyzer."""
+        if self.spectrum is None:
+            return
+        if method in ("wintype", "size"):
+            setattr(self.spectrum, method, args[0])
+        else:
+            getattr(self.spectrum, method)(*args)
+
+    def shutdown(self):
+        self.server.shutdown()
+
+    ###### Internals ######
+    def getPrefs(self):
+        c = self.cfg
+        return (c["sr"], int(c["bufferSize"]), c["nchnls"], c["enableAudioInput"], c["audioHostAPI"],
+                c["audioOutput"], c["audioInput"], c["defaultFirstInput"], c["defaultFirstOutput"])
+
+    def start(self, timer=True, rec=False):
+        if self.cfg["DEBUG"]:
+            print("Audio server start: begin")
+        self.timeOpened = True
+        self.endDialogPosted = self.endStopPosted = False
+        fade = self.cfg["globalFade"]
+        self.globalamp = Fader(fadein=fade, fadeout=fade, dur=self.cfg["totalTime"]).play()
+        self.out.mul = self.globalamp
+        if self.cfg["automaticMidiBinding"] and self.cfg["useMidi"]:
+            if self.cfg["DEBUG"]:
+                print("Audio server start: use midi")
+                print("midi input device: %d" % self.cfg["midiDeviceIn"])
+            self.checkCtl7 = Midictl(ctlnumber=7, minscale=-48, maxscale=18, init=0)
+            self.onNewCtl7Value = Change(self.checkCtl7)
+            self.ctl7TrigFunc = TrigFunc(self.onNewCtl7Value, self.newCtl7Value)
+        if rec:
+            self.recording = True
+            self.recamp = SigTo(self.amp, time=0.05, init=self.amp)
+            self.recorder = Record(self.pluginObjs[-1].out * self.recamp,
+                                   self.cfg["outputFile"], self.cfg["nchnls"],
+                                   fileformat=self.cfg["fileFormat"], sampletype=self.cfg["sampleType"],
+                                   buffering=8)
+        if self.cfg["showSpectrum"]:
+            self.withSpectrum = True
+            self.specamp = SigTo(self.amp, time=0.05, init=self.amp, mul=self.pluginObjs[-1].out)
+            self.spectrum = Spectrum(self.specamp, function=self._spectrumPoints)
+        if self.cfg["startOffset"] > 0.0:
+            self.server.startoffset = self.cfg["startOffset"]
+        self.withTimer = timer
+        self.server.start()
+        if self.cfg["DEBUG"]:
+            print("Audio server start: end\n")
+
+    def boot(self):
+        sr, bufsize, nchnls, duplex, host, outdev, indev, firstin, firstout = self.getPrefs()
+        if self.cfg["DEBUG"]:
+            print("AUDIO CONFIG:")
+            template = "sr: %s, buffer size: %s, num of channels: %s, duplex: %s, host: %s, output device: %s, input device: %s"
+            print(template % (sr, bufsize, nchnls, duplex, host, outdev, indev))
+            print("first physical input: %s, first physical output: %s\n" % (firstin, firstout))
+            print("MIDI CONFIG: \ninput device: %d\n" % self.cfg["midiDeviceIn"])
+        self.server.setSamplingRate(sr)
+        self.server.setBufferSize(bufsize)
+        self.server.setNchnls(nchnls)
+        self.server.setDuplex(duplex)
+        self.server.setOutputDevice(outdev)
+        self.server.setInputOffset(firstin)
+        self.server.setOutputOffset(firstout)
+        if self.cfg["enableAudioInput"]:
+            self.server.setInputDevice(indev)
+        if self.cfg["useMidi"]:
+            self.server.setMidiInputDevice(self.cfg["midiDeviceIn"])
+        self.server.boot()
+
+    def reinit(self):
+        jackname = self.cfg["jackClient"]
+        if self.cfg["toDac"]:
+            host = self.cfg["audioHostAPI"]
+            self.server.reinit(audio=host, jackname=jackname)
+        else:
+            self.server.reinit(audio="offline_nb", jackname=jackname)
+            self.server.recordOptions(dur=self.cfg["totalTime"], filename=self.cfg["outputFile"],
+                                      fileformat=self.cfg["fileFormat"], sampletype=self.cfg["sampleType"])
+
+    def setTime(self, *args):
+        # Called from the audio thread (or pyo's offline render thread) every
+        # few milliseconds of audio. Only sends events.
+        if len(args) >= 4 and self.timeOpened:
+            time = args[1] * 60 + args[2] + args[3] * 0.001
+            if self.cfg["toDac"]:
+                # Offline renders run much faster than realtime and nobody
+                # watches the clock, so it is only updated when playing.
+                _emit(("clock",), (time, args[1], args[2], args[3] // 10))
+            totalTime = self.cfg["totalTime"]
+            if time >= (totalTime - 0.5) and not self.endDialogPosted:
+                self.endDialogPosted = True
+                _event("near_end")
+            if time >= totalTime and not self.endStopPosted:
+                self.endStopPosted = True
+                _event("end")
+        else:
+            _emit(("clock",), "reset")
+
+    def newCtl7Value(self):
+        # audio thread
+        _emit(("gain_ctl7",), self.checkCtl7.get())
+
+    def _onMidiCtl(self, number, midichnl=1):
+        # audio thread (CtlScan2 callback)
+        _event("midi_ctl", number, midichnl)
+
+    def _spectrumPoints(self, points):
+        # audio thread (Spectrum's refresh timer)
+        _emit(("spectrum",), points)
+
+    def _pluginIs(self, order, name):
+        obj = self.pluginObjs[order]
+        return obj is not None and obj.name == name and name != "None"
+
+    def _makePlugin(self, input, plugin):
+        if plugin is None:
+            obj = CeciliaNonePlugin(input)
+            obj.name = "None"
+        else:
+            obj = self.pluginDict[plugin["name"]](input, plugin["params"], plugin["knobs"])
+            obj.name = plugin["name"]
+        return obj
 
     def cleanup_module(self):
         for i in range(NUM_OF_PLUGINS):
@@ -1884,236 +1805,46 @@ class AudioServer():
             del self.ctl7TrigFunc
         except:
             pass
-        try:
-            CeciliaLib.getVar("currentModule")._cleanup()
-            CeciliaLib.setVar("currentModule", None)
-        except:
-            pass
+        if self.module is not None:
+            try:
+                self.module._cleanup()
+            except:
+                pass
+            self.module = None
 
-    def loadModule(self, module):
+    def loadModule(self, snapshot):
+        global _snapshot
         self.cleanup_module()
+        _snapshot = snapshot
 
         try:
-            currentModule = module()
-        except Exception as e:
-            # If it fails, show the error and reload the current module.
+            currentModule = self.moduleClass()
+        except Exception:
             msg = "Cecilia can't run the current module, last valid module (or a random one if this failed too) will be reloaded.\n\n"
-            self.compileRuntimeError(CeciliaLib.getVar("currentCeciliaFile"), "Runtime Error!", msg)
-            if os.path.isfile(MODULE_RUNTIME_BACKUP_PATH):
-                CeciliaLib.openCeciliaFile(None, MODULE_RUNTIME_BACKUP_PATH,
-                                           CeciliaLib.getVar("builtinModule"))
-            else:
-                CeciliaLib.getVar("mainFrame").onOpenRandom(None)
-
-            return False
+            return False, formatModuleError(self.cfg["currentCeciliaFile"], msg)
 
         currentModule._createOpenSndCtrlReceivers()
         self.out = Sig(currentModule.out)
 
-        plugins = CeciliaLib.getVar("plugins")
-
         for i in range(NUM_OF_PLUGINS):
             if i == 0:
                 tmp_out = self.out
             else:
                 tmp_out = self.pluginObjs[i - 1].out
-            if plugins[i] is None:
-                self.pluginObjs[i] = CeciliaNonePlugin(tmp_out)
-                self.pluginObjs[i].name = "None"
-            else:
-                pl = plugins[i]
-                name, params, knobs = pl.getName(), pl.getParams(), pl.getKnobs()
-                self.pluginObjs[i] = self.pluginDict[name](tmp_out, params, knobs)
-                self.pluginObjs[i].name = name
+            self.pluginObjs[i] = self._makePlugin(tmp_out, snapshot["plugins"][i])
 
         self.pluginObjs[NUM_OF_PLUGINS - 1].out.out()
-        CeciliaLib.setVar("currentModule", currentModule)
+        self.module = currentModule
         currentModule._setWidgetValues()
 
-        CeciliaLib.saveRuntimeBackupFile(CeciliaLib.getVar("currentCeciliaFile"))
-
-        return True
-
-    def movePlugin(self, vpos, dir):
-        i1 = vpos
-        i2 = vpos + dir
-        tmp = self.pluginObjs[i2]
-        self.pluginObjs[i2] = self.pluginObjs[i1]
-        self.pluginObjs[i1] = tmp
-        for i in range(NUM_OF_PLUGINS):
-            if i == 0:
-                tmp_out = self.out
-            else:
-                tmp_out = self.pluginObjs[i - 1].out
-            self.pluginObjs[i].setInput(tmp_out)
-            self.pluginObjs[i].out.play()
-        self.pluginObjs[NUM_OF_PLUGINS - 1].out.out()
-
-    def setPlugin(self, order):
-        plugins = CeciliaLib.getVar("plugins")
-        tmp = self.pluginObjs[order]
-        if order == 0:
-            tmp_out = self.out
-        else:
-            tmp_out = self.pluginObjs[order - 1].out
-        if plugins[order] is None:
-            self.pluginObjs[order] = CeciliaNonePlugin(tmp_out)
-            self.pluginObjs[order].name = "None"
-        else:
-            pl = plugins[order]
-            name, params, knobs = pl.getName(), pl.getParams(), pl.getKnobs()
-            self.pluginObjs[order] = self.pluginDict[name](tmp_out, params, knobs)
-            self.pluginObjs[order].name = name
-        if order < (NUM_OF_PLUGINS - 1):
-            self.pluginObjs[order + 1].setInput(self.pluginObjs[order].out)
-        else:
-            self.pluginObjs[order].out.out()
-        del tmp
+        return True, None
 
     def checkForAutomation(self):
-        plugins = CeciliaLib.getVar("plugins")
         for i in range(NUM_OF_PLUGINS):
-            if plugins[i] is not None:
-                if plugins[i].getName() == self.pluginObjs[i].name:
-                    self.pluginObjs[i].checkForAutomation()
+            if self.pluginObjs[i] is not None and self.pluginObjs[i].name != "None":
+                self.pluginObjs[i].checkForAutomation()
 
     def updatePluginWidgets(self):
-        plugins = CeciliaLib.getVar("plugins")
         for i in range(NUM_OF_PLUGINS):
-            if plugins[i] is not None:
-                if plugins[i].getName() == self.pluginObjs[i].name:
-                    self.pluginObjs[i].updateWidget()
-
-    def setPluginValue(self, order, which, x):
-        plugins = CeciliaLib.getVar("plugins")
-        if plugins[order] is not None:
-            if plugins[order].getName() == self.pluginObjs[order].name:
-                self.pluginObjs[order].setValue(which, x)
-
-    def setPluginPreset(self, order, which, label):
-        plugins = CeciliaLib.getVar("plugins")
-        if plugins[order] is not None:
-            if plugins[order].getName() == self.pluginObjs[order].name:
-                self.pluginObjs[order].setPreset(which, label)
-
-    def setPluginGraph(self, order, which, func):
-        plugins = CeciliaLib.getVar("plugins")
-        if plugins[order] is not None:
-            if plugins[order].getName() == self.pluginObjs[order].name:
-                self.pluginObjs[order].setGraph(which, func)
-
-    def getMidiCtlNumber(self, number, midichnl=1):
-        # audio thread (CtlScan2 callback)
-        uibridge.event(self._applyMidiCtlNumber, number, midichnl)
-
-    def _applyMidiCtlNumber(self, number, midichnl):
-        if self.midiLearnSlider is None:
-            return  # already learned; later controller moves are ignored
-        if not self.midiLearnRange:
-            self.midiLearnSlider.setMidiChannel(midichnl)
-            self.midiLearnSlider.setMidiCtl(number)
-            self.midiLearnSlider = None
-            wx.CallLater(250, self.stop)
-        else:
-            tmp = [number, midichnl]
-            if tmp not in self.midiLearnCtlsAndChnls:
-                self.midiLearnCtlsAndChnls.append(tmp)
-                if len(self.midiLearnCtlsAndChnls) == 2:
-                    self.midiLearnSlider.setMidiChannel([self.midiLearnCtlsAndChnls[0][1], self.midiLearnCtlsAndChnls[1][1]])
-                    self.midiLearnSlider.setMidiCtl([self.midiLearnCtlsAndChnls[0][0], self.midiLearnCtlsAndChnls[1][0]])
-                    self.midiLearnSlider = None
-                    wx.CallLater(250, self.stop)
-
-    def midiLearn(self, slider, rangeSlider=False):
-        self.midiLearnSlider = slider
-        self.midiLearnRange = rangeSlider
-        self.midiLearnCtlsAndChnls = []
-        self.shutdown()
-        self.boot()
-        self.scan = CtlScan2(self.getMidiCtlNumber, False)
-        self.server.start()
-
-    def getAvailableAudioMidiDrivers(self):
-        inputDriverList, inputDriverIndexes = pa_get_input_devices()
-        try:
-            defaultInputDriver = inputDriverList[inputDriverIndexes.index(pa_get_default_input())]
-        except:
-            defaultInputDriver = ""
-        outputDriverList, outputDriverIndexes = pa_get_output_devices()
-        try:
-            defaultOutputDriver = outputDriverList[outputDriverIndexes.index(pa_get_default_output())]
-        except:
-            defaultOutputDriver = ""
-        midiDriverList, midiDriverIndexes = pm_get_input_devices()
-        try:
-            defaultMidiDriver = midiDriverList[midiDriverIndexes.index(pm_get_default_input())]
-        except:
-            defaultMidiDriver = ""
-        if len(midiDriverList) > 1:
-            midiDriverList.append("all")
-            midiDriverIndexes.append(99)
-        return inputDriverList, inputDriverIndexes, defaultInputDriver, outputDriverList, outputDriverIndexes, \
-                defaultOutputDriver, midiDriverList, midiDriverIndexes, defaultMidiDriver
-
-    def validateAudioFile(self, path):
-        return sndinfo(path) is not None
-
-    def getSoundInfo(self, path):
-        """
-        Retrieves information of the sound and prints it to the console.
-
-        return (number of channels, sampling rate, duration, fraction of a table, length in samples, bitrate)
-        """
-        if CeciliaLib.getVar("DEBUG"):
-            print('--------------------------------------')
-            print(path)
-
-        info = sndinfo(path)
-
-        if info is not None:
-            samprate = info[2]
-            chnls = info[3]
-            nsamps = info[0]
-            dur = info[1]
-            bitrate = info[5]
-            format = info[4]
-            for i in range(24):
-                size = math.pow(2, (i + 1))
-                if size > nsamps:
-                    break
-            tableFrac = nsamps / size
-
-            if CeciliaLib.getVar("DEBUG"):
-                print("channels = %d" % chnls)
-                print("sampling rate = %s" % samprate)
-                print("number of samples = %s" % nsamps)
-                print("duration in sec. = %s" % dur)
-                print("bitrate = %s" % bitrate)
-                print("file format = %s" % format)
-
-            return (chnls, samprate, dur, tableFrac, nsamps, bitrate, format)
-        else:
-            if CeciliaLib.getVar("DEBUG"):
-                print('Unable to get sound infos. "%s" bypassed!' % path)
-            return None
-
-    def getSoundsFromList(self, pathList):
-        soundDict = dict()
-        for path in pathList:
-            if os.path.isfile(path):
-                infos = self.getSoundInfo(path)
-                if infos is not None:
-                    sndfile = os.path.split(path)[1]
-                    if sndfile not in soundDict.keys():
-                        soundDict[CeciliaLib.ensureNFD(sndfile)] = {'samprate': infos[1],
-                                        'chnls': infos[0],
-                                        'dur': infos[2],
-                                        'bitrate': infos[5],
-                                        'type': infos[6],
-                                        'path': path}
-            else:
-                if CeciliaLib.getVar("DEBUG"):
-                    print('not a file')
-        if CeciliaLib.getVar("DEBUG"):
-            print()
-        return soundDict
+            if self.pluginObjs[i] is not None and self.pluginObjs[i].name != "None":
+                self.pluginObjs[i].updateWidget(i)

@@ -139,7 +139,7 @@ def run():
         begin()
 
     def running():
-        return C.getVar("audioServer").isAudioServerRunning()
+        return C.getEngine().isRunning()
 
     # --- scenarios -------------------------------------------------------
     def sc_idle():
@@ -153,7 +153,7 @@ def run():
             for s in C.getVar("userSliders"):
                 if hasattr(s, "setPlay"):
                     s.setPlay(1)
-            C.getVar("audioServer").setAmp(-60)
+            C.getEngine().setAmp(-60)
             t = {}
 
             def start():

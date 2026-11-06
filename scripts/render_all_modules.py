@@ -119,10 +119,13 @@ def finish():
 # Modules whose output varies between runs even with a fixed seed (random
 # choices pyo's global seed doesn't reach). Compared with a looser tolerance.
 NONDETERMINISTIC = {
-    "Multiband/MultiBandBeatMaker.c5", "Pitch/RandomAccumulator.c5",
+    "Multiband/MultiBandBeatMaker.c5",
     "Synthesis/StochGrains.c5", "Synthesis/StochGrains2.c5", "Time/BeatMaker.c5",
 }
 NONDETERMINISTIC_TOLERANCE = 0.35
+# Modules that reseed pyo randomly themselves (Global Seed slider at 0). Their
+# level varies from silence to full, so only the render itself is checked.
+UNSEEDED = {"Pitch/RandomAccumulator.c5"}
 
 
 def compare(basefile, new):
@@ -140,6 +143,8 @@ def compare(basefile, new):
             continue
         if a["frames"] != b["frames"] or a["channels"] != b["channels"]:
             changed.append("%s: shape %sx%s -> %sx%s" % (key, a["frames"], a["channels"], b["frames"], b["channels"]))
+            continue
+        if key in UNSEEDED:
             continue
         ra, rb = a["rms"], b["rms"]
         denom = max(ra, rb, 1e-6)
@@ -159,7 +164,7 @@ def run():
     dialogs = []
     C.showErrorDialog = lambda title, msg: dialogs.append("%s: %s" % (title, msg))
 
-    server = C.getVar("audioServer")
+    server = C.getEngine().server  # the AudioServer (LocalEngine)
     orig_reinit = server.reinit
 
     def seeded_reinit():
@@ -226,7 +231,7 @@ def run():
 
     def wait_render():
         key = state["key"]
-        if C.getVar("audioServer").isAudioServerRunning() and time.time() - state["t0"] < 60:
+        if C.getEngine().isRunning() and time.time() - state["t0"] < 60:
             wx.CallLater(20, wait_render)
             return
         elapsed = time.time() - state["t0"]

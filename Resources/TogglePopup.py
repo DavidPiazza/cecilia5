@@ -51,7 +51,7 @@ class CECPopup:
 
     def onPopup(self, value, label):
         if CeciliaLib.getVar("currentModule") is not None and self.output and self.rate == "k":
-            getattr(CeciliaLib.getVar("currentModule"), self.name)(value, label)
+            CeciliaLib.getEngine().callModule(self.name, value, label)
 
 class CECToggle:
     def __init__(self, parent, label, init, rate, name, colour, tooltip, stack=False, output=True):
@@ -78,7 +78,7 @@ class CECToggle:
 
     def onToggle(self, value):
         if CeciliaLib.getVar("currentModule") is not None and self.output:
-            getattr(CeciliaLib.getVar("currentModule"), self.name)(value)
+            CeciliaLib.getEngine().callModule(self.name, value)
 
 class CECButton:
     def __init__(self, parent, label, name, colour, tooltip):
@@ -96,7 +96,7 @@ class CECButton:
 
     def onButton(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            getattr(CeciliaLib.getVar("currentModule"), self.name)(value)
+            CeciliaLib.getEngine().callModule(self.name, value)
 
 
 class CECGen:
@@ -130,7 +130,7 @@ class CECGen:
         if type(value) != list:
             value = self.convertToList(value)
         if CeciliaLib.getVar("currentModule") is not None and self.rate == "k":
-            getattr(CeciliaLib.getVar("currentModule"), self.name)(value)
+            CeciliaLib.getEngine().callModule(self.name, value)
         if self.popup is not None:
             self.popup[0].setValue(self.popup[1], True)
 

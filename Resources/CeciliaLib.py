@@ -27,7 +27,7 @@ from .API_interface import *
 import Resources.Variables as vars
 import wx.lib.agw.supertooltip as STT
 import xmlrpc.client as xmlrpclib
-from . import profiling
+from . import profiling, audioinfo
 
 if sys.version_info[0] < 3:
     unicode_t = unicode
@@ -222,19 +222,28 @@ def startCeciliaSound(timer=True, rec=False):
                     wx.CallAfter(getVar("grapher").toolbar.loadingMsg.Refresh)
                     return
     getControlPanel().resetMeter()
-    getVar("audioServer").shutdown()
-    getVar("audioServer").reinit()
-    getVar("audioServer").boot()
-    if getVar("currentModuleRef") is not None:
-        if not getVar("audioServer").loadModule(getVar("currentModuleRef")):
-            return
-    else:
+    if getVar("currentModuleRef") is None:
         showErrorDialog("Wow...!", "No module to load.")
         return
+    from . import snapshot
+    ok, error = getEngine().play(snapshot.build(), timer=timer, rec=rec)
+    if not ok:
+        # The module failed to run: show why, then reload the last module
+        # that ran (or a random one).
+        setVar("currentModule", None)
+        showErrorDialog("Runtime Error!", error)
+        if os.path.isfile(MODULE_RUNTIME_BACKUP_PATH):
+            openCeciliaFile(None, MODULE_RUNTIME_BACKUP_PATH, getVar("builtinModule"))
+        else:
+            getVar("mainFrame").onOpenRandom(None)
+        return
+    setVar("currentModule", True)
+    saveRuntimeBackupFile(getVar("currentCeciliaFile"))
     getVar("grapher").toolbar.convertSlider.Hide()
     getVar("presetPanel").presetChoice.setEnable(False)
     getControlPanel().durationSlider.Disable()
-    getVar("audioServer").start(timer=timer, rec=rec)
+    if not timer:
+        resetControls()
     profiling.done("play_latency")
     if getVar('showSpectrum'):
         getVar('mainFrame').openSpectrumWindow()
@@ -250,14 +259,47 @@ def stopCeciliaSound():
             setVar('showSpectrum', 0)
         finally:
             setVar('spectrumFrame', None)
-    if getVar("audioServer").isAudioServerRunning():
-        getVar("audioServer").stop()
+    if getEngine().isRunning():
+        getEngine().stop()
         time.sleep(.25)
         if getVar("currentModule") is not None:
-            getVar("audioServer").checkForAutomation()
-            getVar("currentModule")._checkForAutomation()
+            getEngine().writeAutomation()
             getVar("grapher").checkForAutomation()
     resetControls()
+
+def getEngine():
+    """The audio engine (see Resources/engine_client.py)."""
+    return getVar("engine")
+
+def startMidiLearn(widget, rangeSlider=False):
+    from . import engine_client
+    engine_client.startMidiLearn(widget, rangeSlider)
+
+def openModuleInEngine(filepath):
+    """Compiles a .c5 file in the engine and builds its interface. On error,
+    shows it and reloads the previous module (or a random one)."""
+    from . import snapshot
+    setVar("currentModule", None)
+    setVar("currentModuleRef", None)
+    setVar("interfaceWidgets", [])
+    setVar("startOffset", 0.0)
+
+    checkForPresetsInCeciliaFile(filepath)
+
+    getEngine().configure(snapshot.enginePrefs())  # it may boot the server
+    ok, result = getEngine().openModule(filepath)
+    if not ok:
+        showErrorDialog("Syntax Error!", result)
+        if os.path.isfile(MODULE_COMPILE_BACKUP_PATH):
+            openCeciliaFile(None, MODULE_COMPILE_BACKUP_PATH, getVar("builtinModule"))
+        else:
+            getVar("mainFrame").onOpenRandom(None)
+        return False
+
+    setVar("currentModuleRef", True)
+    setVar("interfaceWidgets", result)
+    getVar("mainFrame").onUpdateInterface(None)
+    return True
 
 def resetControls():
     if getVar('interface') is not None:
@@ -271,7 +313,7 @@ def resetControls():
 
 def queryAudioMidiDrivers():
     inputs, inputIndexes, defaultInput, outputs, outputIndexes, \
-    defaultOutput, midiInputs, midiInputIndexes, defaultMidiInput = getVar("audioServer").getAvailableAudioMidiDrivers()
+    defaultOutput, midiInputs, midiInputIndexes, defaultMidiInput = audioinfo.getAvailableAudioMidiDrivers()
     setVar("availableAudioOutputs", outputs)
     setVar("availableAudioOutputIndexes", outputIndexes)
     if getVar("audioOutput") not in outputIndexes:
@@ -742,7 +784,7 @@ def openCeciliaFile(parent, openfile=None, builtin=False):
     else:
         cecFilePath = openfile
 
-    if getVar("audioServer").isAudioServerRunning():
+    if getEngine().isRunning():
         stopCeciliaSound()
 
     snds = []
@@ -770,7 +812,7 @@ def openCeciliaFile(parent, openfile=None, builtin=False):
 
     getVar("mainFrame").Hide()
 
-    if not getVar("audioServer").openCecFile(cecFilePath):
+    if not openModuleInEngine(cecFilePath):
         return
 
     setVar("builtinModule", builtin)

@@ -574,16 +574,18 @@ class Grapher(plot.PlotCanvas):
                     else:
                         marker = plot.PolyMarker(l.getData(), size=1.1, marker="bmp", fillcolour='black')
                     if CeciliaLib.getVar("currentModule") is not None and l.getModified():
+                        engine = CeciliaLib.getEngine()
                         if widget_type == "graph":
-                            CeciliaLib.getVar("currentModule")._graphs[l.name].setValue(data)
+                            engine.setGraph(l.name, data)
                         elif widget_type == "range":
-                            CeciliaLib.getVar("currentModule")._sliders[l.name].setGraph(which, data)
+                            engine.setSliderGraph(l.name, data, which)
                         elif widget_type == "sampler":
-                            CeciliaLib.getVar("currentModule")._samplers[sampler_name].setGraph(l.name, data)
+                            engine.setSamplerGraph(sampler_name, l.name, data)
                         elif widget_type == "slider":
-                            CeciliaLib.getVar("currentModule")._sliders[l.name].setGraph(data)
+                            engine.setSliderGraph(l.name, data)
                         elif widget_type == "plugin_knob":
-                            CeciliaLib.getVar("audioServer").setPluginGraph(slider.getParentVPos(), slider.getKnobPos(), data)
+                            engine.setPluginGraph(slider.getParentVPos(), slider.GetParent().getName(),
+                                                  slider.getKnobPos(), data)
                         l.setModified(False)
                 else:
                     if needRedrawNonSelCurves:
@@ -1288,7 +1290,7 @@ class CursorPanel(wx.Panel):
         event.Skip()
 
     def OnLeftDown(self, evt):
-        if not CeciliaLib.getVar("audioServer").isAudioServerRunning():
+        if not CeciliaLib.getEngine().isRunning():
             gap = int(self.parent.plotter.PositionUserToScreen((0, 0))[0])
             w, h = self.GetSize()
             pos = evt.GetPosition()[0]

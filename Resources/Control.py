@@ -25,7 +25,7 @@ from .constants import *
 from .Widgets import *
 from .TogglePopup import SamplerPopup, SamplerToggle
 from .Plugins import *
-from . import profiling
+from . import profiling, snapshot, audioinfo
 
 class CECControl(scrolled.ScrolledPanel):
     def __init__(self, parent, id=-1, size=(-1, -1), style=wx.BORDER_SIMPLE):
@@ -236,8 +236,8 @@ class CECControl(scrolled.ScrolledPanel):
         self.plugins[i2].Refresh()
         self.bagSizer.Layout()
 
-        if CeciliaLib.getVar("audioServer").isAudioServerRunning():
-            CeciliaLib.getVar("audioServer").movePlugin(vpos, dir)
+        if CeciliaLib.getEngine().isRunning():
+            CeciliaLib.getEngine().movePlugin(vpos, dir)
 
     def replacePlugin(self, order, new):
         ind = PLUGINS_CHOICE.index(self.plugins[order].getName())
@@ -268,8 +268,8 @@ class CECControl(scrolled.ScrolledPanel):
         self.bagSizer.Layout()
         wx.CallAfter(self.SetSize, self.GetSize())
 
-        if CeciliaLib.getVar("audioServer").isAudioServerRunning():
-            CeciliaLib.getVar("audioServer").setPlugin(order)
+        if CeciliaLib.getEngine().isRunning():
+            CeciliaLib.getEngine().setPlugin(order, snapshot.plugin(CeciliaLib.getVar("plugins")[order]))
 
     def setPlugins(self, pluginsDict):
         for key in pluginsDict.keys():
@@ -406,7 +406,6 @@ class CECControl(scrolled.ScrolledPanel):
         self.meterSizer = wx.BoxSizer()
         self.vuMeter = VuMeter(self.outputPanel)
         self.meterSizer.Add(self.vuMeter, 0, wx.EXPAND | wx.ALIGN_LEFT | wx.LEFT | wx.BOTTOM, 8)
-        CeciliaLib.getVar("audioServer").setAmpCallable(self.vuMeter)
 
         # Channels choice
         self.lineSizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -624,7 +623,7 @@ class CECControl(scrolled.ScrolledPanel):
                 self.cfileinList[0].updateMenuFromPath(self.outputFilename)
 
     def setTotalTime(self, time, force=False):
-        if CeciliaLib.getVar("audioServer").isAudioServerRunning() and not force:
+        if CeciliaLib.getEngine().isRunning() and not force:
             self.tmpTotalTime = time
         else:
             if self.cfileinList != [] and time == 0:
@@ -643,7 +642,7 @@ class CECControl(scrolled.ScrolledPanel):
         self.updateOutputFormat()
 
     def onChangeGain(self, gain):
-        CeciliaLib.getVar("audioServer").setAmp(gain)
+        CeciliaLib.getEngine().setAmp(gain)
 
     def updatePeak(self, peak):
         self.peak = peak * 90.0 - 90.0
@@ -715,7 +714,7 @@ class CInputBase(wx.Panel):
         self.toolbox.enable(state)
 
     def onChangeMode(self, value):
-        if not CeciliaLib.getVar("audioServer").isAudioServerRunning():
+        if not CeciliaLib.getEngine().isRunning():
             self.mode = value
             CeciliaLib.getVar("userInputs")[self.name]['mode'] = self.mode
             self.processMode()
@@ -786,7 +785,7 @@ class CInputBase(wx.Panel):
 
         if path is None:
             return False
-        if not CeciliaLib.getVar("audioServer").validateAudioFile(path):
+        if not audioinfo.validateAudioFile(path):
             CeciliaLib.showErrorDialog("Unable to retrieve sound infos",
                                        "There is something wrong with this file, please select another one.")
             return False
@@ -820,7 +819,7 @@ class CInputBase(wx.Panel):
         pathList = []
         for p in os.listdir(root):
             pathList.append(os.path.join(root, p))
-        self.folderInfo = CeciliaLib.getVar("audioServer").getSoundsFromList(pathList)
+        self.folderInfo = audioinfo.getSoundsFromList(pathList)
         files = list(self.folderInfo.keys())
         files.sort()
 
@@ -931,7 +930,7 @@ class CSampler(CInputBase):
                 line.changeYrange((0, self.duration))
 
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setSound(self.filePath)
+            CeciliaLib.getEngine().samplerCall(self.name, "setSound", self.filePath)
 
     def getSamplerInfo(self):
         info = {}
@@ -1237,7 +1236,7 @@ class SamplerFrame(BaseInputFrame):
 
     def handleXfadeSwitch(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setXfadeShape(value)
+            CeciliaLib.getEngine().samplerCall(self.name, "setXfadeShape", value)
 
     def setXfadeShape(self, value):
         self.xfadeSwitcher.setValue(value)
@@ -1247,7 +1246,7 @@ class SamplerFrame(BaseInputFrame):
 
     def handleLoopMode(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setLoopMode(value)
+            CeciliaLib.getEngine().samplerCall(self.name, "setLoopMode", value)
 
     def setLoopMode(self, index):
         self.loopMenu.popup.setByIndex(index)
@@ -1263,7 +1262,7 @@ class SamplerFrame(BaseInputFrame):
 
     def handleLoopX(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setXfade(value)
+            CeciliaLib.getEngine().samplerCall(self.name, "setXfade", value)
 
     def setLoopX(self, values):
         self.loopXSlider.setValue(values[0])
@@ -1292,7 +1291,7 @@ class SamplerFrame(BaseInputFrame):
 
     def handleLoopIn(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setStart(value)
+            CeciliaLib.getEngine().samplerCall(self.name, "setStart", value)
 
     def setLoopIn(self, values):
         self.loopInSlider.setValue(values[0])
@@ -1323,7 +1322,7 @@ class SamplerFrame(BaseInputFrame):
 
     def handleLoopOut(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setDur(value)
+            CeciliaLib.getEngine().samplerCall(self.name, "setDur", value)
 
     def setLoopOut(self, values):
         self.loopOutSlider.setValue(values[0])
@@ -1354,7 +1353,7 @@ class SamplerFrame(BaseInputFrame):
 
     def handleGain(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setGain(value)
+            CeciliaLib.getEngine().samplerCall(self.name, "setGain", value)
 
     def setGain(self, values):
         self.gainSlider.setValue(values[0])
@@ -1383,7 +1382,7 @@ class SamplerFrame(BaseInputFrame):
 
     def handleTransp(self, value):
         if CeciliaLib.getVar("currentModule") is not None:
-            CeciliaLib.getVar("currentModule")._samplers[self.name].setPitch(value)
+            CeciliaLib.getEngine().samplerCall(self.name, "setPitch", value)
 
     def setTransp(self, values):
         self.transpSlider.setValue(values[0])
@@ -1490,7 +1489,7 @@ class SamplerPlayRecButtons(wx.Panel):
         evt.Skip()
 
     def OnEnter(self, evt):
-        if evt.LeftIsDown() and not CeciliaLib.getVar("audioServer").isAudioServerRunning():
+        if evt.LeftIsDown() and not CeciliaLib.getEngine().isRunning():
             self.enterWithButtonDown = True
             pos = evt.GetPosition()
             if wx.Rect(0, 0, 20, 20).Contains(pos):
@@ -1512,7 +1511,7 @@ class SamplerPlayRecButtons(wx.Panel):
         self.enterWithButtonDown = False
 
     def OnMotion(self, evt):
-        if not CeciliaLib.getVar("audioServer").isAudioServerRunning() and not self.enterWithButtonDown:
+        if not CeciliaLib.getEngine().isRunning() and not self.enterWithButtonDown:
             pos = evt.GetPosition()
             if wx.Rect(2, 2, 17, 17).Contains(pos) and self.playOverWait:
                 self.playOver = True
@@ -1810,7 +1809,7 @@ class SamplerSlider:
         if evt.ShiftDown():
             self.setMidiCtl(None)
         elif CeciliaLib.getVar("useMidi"):
-            CeciliaLib.getVar("audioServer").midiLearn(self)
+            CeciliaLib.startMidiLearn(self)
             self.slider.inMidiLearnMode()
 
     def setMidiCtl(self, ctl):

@@ -43,6 +43,10 @@ CeciliaVar['mainFrame'] = None
 CeciliaVar['currentCeciliaFile'] = ''
 CeciliaVar['lastCeciliaFile'] = ''
 CeciliaVar['builtinModule'] = False
+# Interface-side flags about the engine: currentModuleRef is True once a
+# module file is compiled in the engine, currentModule is True while the
+# engine has built that module (set to None to keep widgets from sending
+# values to the engine, e.g. while a preset is loaded).
 CeciliaVar['currentModuleRef'] = None
 CeciliaVar['currentModule'] = None
 CeciliaVar['currentModuleName'] = None
@@ -105,7 +109,7 @@ CeciliaVar['totalTime'] = 30.0
 CeciliaVar['defaultTotalTime'] = 30.0
 CeciliaVar['startOffset'] = 0.0
 CeciliaVar['globalFade'] = 0.005
-CeciliaVar['audioServer'] = None
+CeciliaVar['engine'] = None  # see Resources/engine_client.py
 CeciliaVar['automaticMidiBinding'] = 0
 CeciliaVar['showSpectrum'] = 0
 CeciliaVar['spectrumFrame'] = None

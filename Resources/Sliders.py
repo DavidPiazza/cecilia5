@@ -73,7 +73,7 @@ class PlayRecButtons(wx.Panel):
             self.recOverWait = True
 
     def MouseDown(self, evt):
-        if not CeciliaLib.getVar("audioServer").isAudioServerRunning():
+        if not CeciliaLib.getEngine().isRunning():
             pos = evt.GetPosition()
             if wx.Rect(2, 2, 17, 17).Contains(pos):
                 self.play = (self.play + 1) % 3
@@ -91,7 +91,7 @@ class PlayRecButtons(wx.Panel):
             evt.Skip()
 
     def OnEnter(self, evt):
-        if evt.LeftIsDown() and not CeciliaLib.getVar("audioServer").isAudioServerRunning():
+        if evt.LeftIsDown() and not CeciliaLib.getEngine().isRunning():
             self.enterWithButtonDown = True
             pos = evt.GetPosition()
             if wx.Rect(0, 0, 20, 20).Contains(pos):
@@ -111,7 +111,7 @@ class PlayRecButtons(wx.Panel):
         self.enterWithButtonDown = False
 
     def OnMotion(self, evt):
-        if not CeciliaLib.getVar("audioServer").isAudioServerRunning() and not self.enterWithButtonDown:
+        if not CeciliaLib.getEngine().isRunning() and not self.enterWithButtonDown:
             pos = evt.GetPosition()
             if wx.Rect(2, 2, 17, 17).Contains(pos) and self.playOverWait:
                 self.playOver = True
@@ -288,7 +288,7 @@ class Slider(wx.Panel):
         if self.HasCapture():
             self.ReleaseMouse()
         if self.cecslider.getUp() and CeciliaLib.getVar("currentModule") is not None:
-            getattr(CeciliaLib.getVar("currentModule"), self.cecslider.name + "_up")(self.GetValue())
+            CeciliaLib.getEngine().callModule(self.cecslider.name + "_up", self.GetValue())
 
     def OnResize(self, evt):
         self.createSliderBitmap()
@@ -532,7 +532,7 @@ class CECSlider:
             elif alt:
                 if CeciliaLib.getVar("useMidi"):
                     CeciliaLib.getVar("grapher").toolbar.menu.setLabel(label, True)
-                    CeciliaLib.getVar("audioServer").midiLearn(self)
+                    CeciliaLib.startMidiLearn(self)
                     self.slider.inMidiLearnMode()
                 else:
                     CeciliaLib.showErrorDialog("Midi not initialized!",
@@ -564,7 +564,7 @@ class CECSlider:
     def sendValue(self, value):
         if self.getPlay() in [0, 1] or self.getRec() == 1:
             if CeciliaLib.getVar("currentModule") is not None:
-                CeciliaLib.getVar("currentModule")._sliders[self.name].setValue(value)
+                CeciliaLib.getEngine().setSlider(self.name, value)
 
     def entryReturn(self, value):
         self.slider.SetValue(value)
@@ -885,7 +885,7 @@ class RangeSlider(wx.Panel):
         if self.HasCapture():
             self.ReleaseMouse()
         if self.cecslider.getUp() and CeciliaLib.getVar("currentModule") is not None:
-            getattr(CeciliaLib.getVar("currentModule"), self.cecslider.name + "_up")(self.GetValue())
+            CeciliaLib.getEngine().callModule(self.cecslider.name + "_up", self.GetValue())
 
     def OnResize(self, evt):
         self.createSliderBitmap()
@@ -1114,7 +1114,7 @@ class CECRange:
             elif rightclick:
                 if CeciliaLib.getVar("useMidi"):
                     CeciliaLib.getVar("grapher").toolbar.menu.setLabel(label, True)
-                    CeciliaLib.getVar("audioServer").midiLearn(self, True)
+                    CeciliaLib.startMidiLearn(self, True)
                     self.slider.inMidiLearnMode()
                 else:
                     CeciliaLib.showErrorDialog("Midi not initialized!",
@@ -1146,7 +1146,7 @@ class CECRange:
     def sendValue(self, value):
         if self.getPlay() in [0, 1] or self.getRec() == 1:
             if CeciliaLib.getVar("currentModule") is not None:
-                CeciliaLib.getVar("currentModule")._sliders[self.name].setValue(value)
+                CeciliaLib.getEngine().setSlider(self.name, value)
 
     def entryReturn(self, value):
         self.slider.SetValue(value)
@@ -1532,7 +1532,7 @@ class SplitterSlider(wx.Panel):
         if self.HasCapture():
             self.ReleaseMouse()
         if self.cecslider.getUp() and CeciliaLib.getVar("currentModule") is not None:
-            getattr(CeciliaLib.getVar("currentModule"), self.cecslider.name + "_up")(self.GetValue())
+            CeciliaLib.getEngine().callModule(self.cecslider.name + "_up", self.GetValue())
 
     def OnResize(self, evt):
         self.createSliderBitmap()
@@ -1728,7 +1728,7 @@ class CECSplitter:
     def sendValue(self, value):
         if self.getPlay() in [0, 1] or self.getRec() == 1:
             if CeciliaLib.getVar("currentModule") is not None:
-                CeciliaLib.getVar("currentModule")._sliders[self.name].setValue(value)
+                CeciliaLib.getEngine().setSlider(self.name, value)
 
     def entryReturn(self, value):
         self.slider.SetValue(value)

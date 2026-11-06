@@ -626,4 +626,4 @@ class PreferenceFrame(wx.Frame):
 
     def enableVerbose(self, state):
         CeciliaLib.setVar("DEBUG", state)
-        CeciliaLib.getVar("audioServer").updateDebug()
+        CeciliaLib.getEngine().updateDebug(CeciliaLib.getVar("DEBUG"))

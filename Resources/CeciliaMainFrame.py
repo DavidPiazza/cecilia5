@@ -28,7 +28,7 @@ import Resources.CeciliaInterface as CeciliaInterface
 from .menubar import InterfaceMenuBar
 from .Widgets import *
 from .DocFrame import ManualFrame
-from . import profiling, uibridge
+from . import profiling, uibridge, engine_client
 
 class CeciliaMainFrame(wx.Frame):
     def __init__(self, parent, ID):
@@ -52,7 +52,7 @@ class CeciliaMainFrame(wx.Frame):
             CeciliaLib.getVar("interface").updateTitle('Cecilia5 - ' + title)
 
     def onShortPlayStop(self, event):
-        self.onPlayStop(not CeciliaLib.getVar("audioServer").isAudioServerRunning())
+        self.onPlayStop(not CeciliaLib.getEngine().isRunning())
 
     def onPlayStop(self, value):
         if value:
@@ -148,7 +148,7 @@ class CeciliaMainFrame(wx.Frame):
         dlg.SetClientSize((600, 120))
         state = {"index": 0, "failed": [], "filename": None, "cancelled": False}
         self.batchRunner = state
-        server = CeciliaLib.getVar("audioServer")
+        engine = CeciliaLib.getEngine()
 
         def end():
             finish()
@@ -178,7 +178,7 @@ class CeciliaMainFrame(wx.Frame):
             wx.CallLater(20, waitForRender)
 
         def waitForRender():
-            if server.isAudioServerRunning():
+            if engine.isRunning():
                 wx.CallLater(20, waitForRender)
                 return
             if not self._isValidOutputFile(state["filename"]):
@@ -343,7 +343,7 @@ class CeciliaMainFrame(wx.Frame):
                 for key in CeciliaLib.getVar("userInputs").keys():
                     if CeciliaLib.getVar("userInputs")[key]['path'] != '':
                         snds.append(CeciliaLib.getVar("userInputs")[key]['path'])
-        if CeciliaLib.getVar("audioServer").isAudioServerRunning():
+        if CeciliaLib.getEngine().isRunning():
             CeciliaLib.stopCeciliaSound()
         self.closeInterface()
         CeciliaLib.parseInterfaceText()
@@ -365,7 +365,7 @@ class CeciliaMainFrame(wx.Frame):
     def openSpectrumWindow(self):
         if CeciliaLib.getVar('spectrumFrame') is None:
             f = SpectrumFrame(CeciliaLib.getVar("interface"))
-            f.setAnalyzer(CeciliaLib.getVar("audioServer").spectrum)
+            f.setAnalyzer(engine_client.SpectrumProxy(CeciliaLib.getVar("nchnls"), CeciliaLib.getVar("sr")))
             f.Center()
             f.Show()
             CeciliaLib.setVar('spectrumFrame', f)
@@ -387,8 +387,8 @@ class CeciliaMainFrame(wx.Frame):
         except:
             pass
 
-        if CeciliaLib.getVar("audioServer").isAudioServerRunning():
-            CeciliaLib.getVar("audioServer").stop()
+        if CeciliaLib.getEngine().isRunning():
+            CeciliaLib.getEngine().stop()
             time.sleep(.2)
 
         if CeciliaLib.getVar('spectrumFrame') is not None:

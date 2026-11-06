@@ -402,7 +402,7 @@ class Label(MainLabel):
             side = 'left'
         else:
             side = 'right'
-        if self.outFunction and not CeciliaLib.getVar("audioServer").isAudioServerRunning():
+        if self.outFunction and not CeciliaLib.getEngine().isRunning():
             if event.ShiftDown():
                 self.outFunction(self.label, True, True, side=side)
             else:

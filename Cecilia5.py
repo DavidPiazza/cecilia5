@@ -23,7 +23,7 @@ import os, sys, random
 import wx
 from Resources.constants import *
 from Resources.Variables import loadBitmaps
-from Resources import audio, CeciliaMainFrame
+from Resources import engine_client, CeciliaMainFrame
 from Resources.splash import CeciliaSplashScreen
 import Resources.CeciliaLib as CeciliaLib
 
@@ -68,8 +68,7 @@ def onStart():
 
 if __name__ == '__main__':
 
-    audioServer = audio.AudioServer()
-    CeciliaLib.setVar("audioServer", audioServer)
+    CeciliaLib.setVar("engine", engine_client.LocalEngine())
 
     try:
         CeciliaLib.queryAudioMidiDrivers()
